@@ -1,7 +1,5 @@
 package com.example.kachrafreeresident.ui.main
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -27,21 +25,24 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.kachrafreeresident.PlacesApi
-import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.CameraPosition
-import com.google.android.gms.maps.model.LatLng
-import com.google.maps.android.compose.GoogleMap
-import com.google.maps.android.compose.rememberCameraPositionState
+import androidx.compose.ui.viewinterop.AndroidView
+import com.example.kachrafreeresident.ServerApi
 import java.util.Locale
+import org.osmdroid.events.DelayedMapListener
+import org.osmdroid.events.MapListener
+import org.osmdroid.events.ScrollEvent
+import org.osmdroid.events.ZoomEvent
+import org.osmdroid.util.GeoPoint
 
-private const val DEFAULT_ZOOM = 16f
+private const val DEFAULT_ZOOM = 17.0
 
 /**
  * Full-screen "drop a pin" location picker, the same pattern most delivery
@@ -52,50 +53,62 @@ private const val DEFAULT_ZOOM = 16f
  */
 @Composable
 fun LocationPickerScreen(
-    initialLatLng: LatLng,
-    moveCameraTo: LatLng?,
+    initialLatLng: GeoPoint,
+    moveCameraTo: GeoPoint?,
     pickedAddress: String?,
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
     onSearchSubmit: () -> Unit,
     hasSearched: Boolean,
     searchFailed: Boolean,
-    searchResults: List<PlacesApi.PlaceResult>,
-    onResultSelected: (PlacesApi.PlaceResult) -> Unit,
-    onCameraSettled: (LatLng) -> Unit,
+    searchResults: List<ServerApi.PlaceResult>,
+    onResultSelected: (ServerApi.PlaceResult) -> Unit,
+    onCameraSettled: (GeoPoint) -> Unit,
+    onCameraMoveDone: () -> Unit,
     onLocateMeClick: () -> Unit,
-    onConfirm: (LatLng) -> Unit
+    onConfirm: (GeoPoint) -> Unit
 ) {
-    val cameraPositionState = rememberCameraPositionState {
-        position = CameraPosition.fromLatLngZoom(initialLatLng, DEFAULT_ZOOM)
-    }
+    val mapView = rememberMapView()
+    // Where the pin is: updated whenever the map stops moving.
+    var center by remember { mutableStateOf(initialLatLng) }
+    val settled by rememberUpdatedState(onCameraSettled)
 
-    var mapLoaded by remember { mutableStateOf(false) }
-
-    LaunchedEffect(moveCameraTo, mapLoaded) {
-        if (mapLoaded) {
-            moveCameraTo?.let { target ->
-                cameraPositionState.animate(
-                    update = CameraUpdateFactory.newLatLngZoom(target, DEFAULT_ZOOM),
-                    durationMs = 600
-                )
-            }
-        }
-    }
-
-    LaunchedEffect(cameraPositionState.isMoving) {
-        if (mapLoaded && !cameraPositionState.isMoving) {
-            onCameraSettled(cameraPositionState.position.target)
+    // Runs whenever moveCameraTo changes.
+    LaunchedEffect(moveCameraTo) {
+        if (moveCameraTo != null) {
+            mapView.controller.animateTo(moveCameraTo, DEFAULT_ZOOM, 600L)
+            // Clear the request, so asking for the same spot again (e.g.
+            // tapping "my location" twice) moves the camera again.
+            onCameraMoveDone()
         }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
 
-        GoogleMap(
+        AndroidView(
             modifier = Modifier.fillMaxSize(),
-            cameraPositionState = cameraPositionState,
-            onMapLoaded = { mapLoaded = true }
+            factory = {
+                mapView.apply {
+                    controller.setZoom(DEFAULT_ZOOM)
+                    controller.setCenter(initialLatLng)
+                    // Fires once panning/zooming has stopped for 400 ms: that
+                    // point under the pin is the picked location.
+                    addMapListener(DelayedMapListener(object : MapListener {
+                        override fun onScroll(event: ScrollEvent?): Boolean = onStop()
+                        override fun onZoom(event: ZoomEvent?): Boolean = onStop()
+                        private fun onStop(): Boolean {
+                            center = centerPoint()
+                            settled(center)
+                            return true
+                        }
+                    }, 400))
+                    // Address for the starting position straight away.
+                    post { settled(centerPoint()) }
+                }
+            }
         )
+
+        OsmCredit(modifier = Modifier.align(Alignment.BottomStart).padding(bottom = 130.dp))
 
         // A pin fixed at the exact screen center - the map pans underneath
         // it. Simpler to get right than a draggable marker, and it's what
@@ -149,7 +162,7 @@ fun LocationPickerScreen(
                     Column(modifier = Modifier.padding(8.dp)) {
                         when {
                             searchFailed -> Text(
-                                text = "Search isn't available yet - the server is offline",
+                                text = "Search isn't available right now. Move the map to your house instead.",
                                 style = MaterialTheme.typography.bodySmall
                             )
                             searchResults.isEmpty() -> Text(
@@ -164,7 +177,7 @@ fun LocationPickerScreen(
                                     Text(
                                         text = result.name,
                                         modifier = Modifier.fillMaxWidth(),
-                                        textAlign = androidx.compose.ui.text.style.TextAlign.Start
+                                        textAlign = TextAlign.Start
                                     )
                                 }
                             }
@@ -193,19 +206,14 @@ fun LocationPickerScreen(
             Column(modifier = Modifier.padding(16.dp)) {
 
                 Text(
-                    text = pickedAddress ?: String.format(
-                        Locale.US,
-                        "%.6f, %.6f",
-                        cameraPositionState.position.target.latitude,
-                        cameraPositionState.position.target.longitude
-                    ),
+                    text = pickedAddress ?: String.format(Locale.US, "%.6f, %.6f", center.latitude, center.longitude),
                     style = MaterialTheme.typography.bodyMedium
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
 
                 Button(
-                    onClick = { onConfirm(cameraPositionState.position.target) },
+                    onClick = { onConfirm(mapView.centerPoint()) },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Confirm this location")
