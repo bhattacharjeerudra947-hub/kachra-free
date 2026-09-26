@@ -1,7 +1,20 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
 }
+
+// The Google Maps API key lives in local.properties (gitignored), never in
+// source or manifest directly - see docs/PROTOCOL.md for how to get one.
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) {
+        load(FileInputStream(file))
+    }
+}
+val mapsApiKey: String = localProperties.getProperty("MAPS_API_KEY") ?: ""
 
 android {
     namespace = "com.example.kachrafreeresident"
@@ -12,6 +25,8 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+
+        manifestPlaceholders["mapsApiKey"] = mapsApiKey
     }
 
     buildTypes {
@@ -56,4 +71,9 @@ dependencies {
   implementation(libs.androidx.compose.material3)
   // Tooling (for @Preview in Android Studio)
   debugImplementation(libs.androidx.compose.ui.tooling)
+
+  // Maps (house location picker + truck status map). Location search does
+  // NOT use the Places SDK client library on purpose - see PlacesApi.kt.
+  implementation(libs.play.services.maps)
+  implementation(libs.maps.compose)
 }

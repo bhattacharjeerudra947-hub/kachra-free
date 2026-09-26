@@ -17,9 +17,13 @@ actually needs it.
 ## 1. Architecture at a glance
 
 ```text
-driver-app  --POST truck location every 10s-->  SERVER  <--GET status every 15s--  resident-app
-                                                    |
-                                              (not built yet)
+driver-app    --POST truck location every 10s-->  SERVER  <--GET status every 15s--   resident-app
+                                                      |                                     |
+                                                (not built yet)                    GET /api/places/search
+                                                      |                            (proxies to a mapping
+                                              holds all 3rd-party                   provider using a key
+                                              API keys, admin-                      the server holds -
+                                              panel configured                      see section 6)
 ```
 
 Both apps are local-first: every action succeeds and is saved on the phone
@@ -106,17 +110,20 @@ Request body:
 ## 3. resident-app
 
 **Purpose:** one-time registration (phone number, house location, alert
-preference) plus an optional live status/ETA display — see AGENTS.md
-sections 2–3.
+preference) plus a live status/ETA display with a map — see AGENTS.md
+sections 2–3 and 5.
 
 ### Key files
 
 | File | Role |
 |---|---|
-| `MainActivity.kt` | Owns all state; shows `RegisterScreen` or `StatusScreen` depending on whether the resident is registered. |
-| `ui/main/RegisterScreen.kt` | Phone number, house location (manual lat/lng + "use my current location"), alert-range radio buttons. |
-| `ui/main/StatusScreen.kt` | Read-only view of the saved registration plus the latest server-reported truck/ETA. |
-| `ResidentApi.kt` | The two HTTP calls (register, fetch status). |
+| `MainActivity.kt` | Owns all state; switches between `RegisterScreen`, `StatusScreen`, and `TruckMapScreen`. |
+| `ui/main/RegisterScreen.kt` | Phone number, house location summary + "Choose on map" button, alert-range radio buttons. |
+| `ui/main/StatusScreen.kt` | Read-only view of the saved registration plus the latest server-reported truck/ETA, with a "View on map" button. |
+| `LocationPickerActivity.kt` / `ui/main/LocationPickerScreen.kt` | Full-screen "drop a pin" house-location picker (see §3.2). |
+| `ui/main/TruckMapScreen.kt` | AGENTS.md §5's map: house marker, truck marker, expected path, ETA. |
+| `ResidentApi.kt` | Register + fetch-status HTTP calls. |
+| `PlacesApi.kt` | Location *search* HTTP call — deliberately separate from ResidentApi, see §6. |
 | `AppPrefs.kt` / `ServerConfig.kt` | Same pattern as driver-app. |
 
 ### Permissions
@@ -126,14 +133,62 @@ sections 2–3.
 background, matching AGENTS.md 16.1. `usesCleartextTraffic="true"` for the
 same http-during-development reason as driver-app.
 
-### House location capture
+### 3.1 Dependencies
 
-There's no map picker yet (that needs a Maps SDK + API key, deliberately
-out of scope for now — see §5). "Use my current location" does a
-**single** location read (`getLastKnownLocation`, or one `LocationListener`
-callback that immediately unregisters itself) to prefill the latitude/
-longitude fields, which remain plain editable text either way. This is a
-one-shot convenience, not tracking.
+`com.google.android.gms:play-services-maps` + `com.google.maps.android:maps-compose`
+render the map (`GoogleMap`/`Marker`/`Polyline` composables). That's it —
+no Places SDK client library, on purpose (§6).
+
+### 3.2 House location picker (`LocationPickerActivity`)
+
+A full-screen "drop a pin" picker — the same pattern Zomato/Swiggy/Uber use:
+the map pans freely underneath a pin fixed at the exact screen center
+(simpler and more reliable than a draggable marker). Started for a result
+from `MainActivity`:
+
+- In: `initial_latitude` / `initial_longitude` (optional `double` extras —
+  omitted on first-time registration, pre-filled when editing).
+- Out (on confirm): `result_latitude`, `result_longitude` (`double`),
+  `result_address` (`String?` — reverse-geocoded via Android's built-in
+  `Geocoder`, null if that lookup failed; the picker still returns
+  coordinates either way).
+
+Inside the picker: a search bar (see §3.3), a "🧭" FAB that centers the map
+on a one-shot device location read (same permission-gated, self-unregistering
+`LocationListener` pattern driver-app uses — not continuous tracking), and a
+bottom "Confirm this location" button that reads whatever's currently under
+the center pin.
+
+### 3.3 Location search (`PlacesApi.kt`)
+
+Typing in the picker's search bar calls the resident app's own server, not
+a mapping provider directly:
+
+```
+GET {BASE_URL}/api/places/search?query={url-encoded text}
+```
+
+Expected response body:
+
+```json
+{
+  "results": [
+    { "name": "Koramangala, Bengaluru", "latitude": 12.9352, "longitude": 77.6146 },
+    { "name": "Koramangala Club", "latitude": 12.9340, "longitude": 77.6120 }
+  ]
+}
+```
+
+- The server is expected to proxy this to whichever geocoding/places
+  provider it's configured with (Google Places, Mapbox, OSM Nominatim,
+  whatever the admin panel points it at) — the app doesn't know or care
+  which.
+- `results` may be empty (genuinely no matches) — the app distinguishes
+  that from "couldn't reach the server at all" (`PlacesApi.search` returns
+  `null` on any network failure) and shows a different message for each.
+- Tapping a result moves the picker's map camera there; it does not
+  immediately confirm the location — the resident still fine-tunes with
+  the pin and taps "Confirm".
 
 ### Local storage (`SharedPreferences`, file `resident_prefs`)
 
@@ -142,6 +197,7 @@ one-shot convenience, not tracking.
 | `registered` | Boolean | Whether registration has been completed at least once. |
 | `phone_number` | String | Resident's phone number. |
 | `latitude` / `longitude` | String | House location (kept as text so it round-trips exactly through the form). |
+| `address` | String? | Reverse-geocoded label for the house location, if available; falls back to raw coordinates in the UI when absent. |
 | `alert_minutes` | Int | One of 5 / 10 / 15 / 30, per AGENTS.md section 3. |
 
 Registration is local-first, same as driver-app: saving to
@@ -162,10 +218,14 @@ Request body:
   "phoneNumber": "+911234567890",
   "latitude": 12.971600,
   "longitude": 77.594600,
-  "alertMinutes": 10
+  "alertMinutes": 10,
+  "address": "12 MG Road, Bengaluru"
 }
 ```
 
+- `address` is optional and purely a display convenience (e.g. for an
+  admin panel list) — omitted from the request entirely when the app has
+  no reverse-geocoded label.
 - Treated as an **upsert** — calling it again with the same `phoneNumber`
   (e.g. editing house location later) should update the existing resident
   record, not create a duplicate. `phoneNumber` is therefore the natural
@@ -187,17 +247,29 @@ Expected response body:
   "truckId": "TRUCK-1",
   "truckLatitude": 12.970000,
   "truckLongitude": 77.590000,
-  "etaMinutes": 8
+  "etaMinutes": 8,
+  "path": [
+    { "latitude": 12.9700, "longitude": 77.5900 },
+    { "latitude": 12.9710, "longitude": 77.5930 },
+    { "latitude": 12.9716, "longitude": 77.5946 }
+  ]
 }
 ```
 
-- All fields are optional/nullable from the client's point of view — the
-  app renders "Waiting for the server..." if the call fails entirely, and
-  "ETA: not available yet" if `etaMinutes` is missing even though the call
-  succeeded (e.g. server has the resident but no route/ETA computed yet).
-- Polled every 15 seconds while `StatusScreen` is visible (`MainActivity`'s
-  `STATUS_POLL_INTERVAL_MS`); stopped while the registration form is open
-  or the app is backgrounded.
+- All fields are optional/nullable from the client's point of view.
+- `path` is the truck's **expected route** to the house (AGENTS.md section
+  6 — the historical-collection-order-aware path, not a straight line).
+  `TruckMapScreen` only draws a polyline when `path` has 2+ points; with
+  it omitted or empty, the map just shows the house and truck markers with
+  no connecting line, since AGENTS.md section 5 is explicit that a naive
+  straight line would be misleading.
+- The app renders "Waiting for the server..." if the call fails entirely,
+  and "ETA: not available yet" if `etaMinutes` is missing even though the
+  call succeeded (e.g. server has the resident but no route/ETA computed
+  yet).
+- Polled every 15 seconds while `StatusScreen` or `TruckMapScreen` is
+  visible (`MainActivity`'s `STATUS_POLL_INTERVAL_MS`); stopped while the
+  registration form is open or the app is backgrounded.
 - The server is expected to do the work described in AGENTS.md sections
   6–11 (route-aware ETA, correct-truck selection) to produce this — the
   resident app itself has no routing logic, it only displays what the
@@ -211,7 +283,8 @@ Expected response body:
 |---|---|---|---|---|
 | `/api/trucks/location` | POST | driver-app | every 10s while tracking | Report current truck GPS fix. |
 | `/api/residents/register` | POST | resident-app | on register / on edit-save | Create or update a resident record. |
-| `/api/residents/status` | GET | resident-app | every 15s while status screen is open | Fetch the relevant truck + ETA for a resident. |
+| `/api/residents/status` | GET | resident-app | every 15s while status/map screen is open | Fetch the relevant truck + ETA (+ expected path) for a resident. |
+| `/api/places/search` | GET | resident-app | on each search-bar submit in the location picker | Proxy a location-name search to whatever geocoding provider the server is configured with. |
 
 None of these exist server-side yet. Both apps already point at
 `http://10.0.2.2:8080` (the Android emulator's alias for the host
@@ -226,16 +299,50 @@ These are explicitly deferred, per AGENTS.md's phased priority (section 17)
 and the "keep it simple" principle — not oversights:
 
 - **The server itself** — `server/` is empty. Everything above is the
-  contract it needs to implement.
+  contract it needs to implement, including `/api/places/search`, which
+  is what makes the resident app's map picker's search bar do anything.
 - **Push notifications / SMS** (AGENTS.md section 12) — no Firebase Cloud
   Messaging integration in resident-app, and SMS is entirely a
   server-side responsibility (e.g. via a provider like Twilio) that
   doesn't touch the resident app at all.
-- **Map view with truck position + expected path** (AGENTS.md section 5) —
-  would need a Maps SDK and API key. Deferred until the server can supply
-  real route/ETA data to show; a live map with no backend would just be
-  dead weight and adds a dependency for no payoff.
 - **Route prediction / ETA engine / traffic integration** (sections 6–10)
-  — entirely server-side; both apps are already wired to send/receive the
-  data this would need.
-- **Admin panel** (section 13–14) — not started.
+  — entirely server-side; `/api/residents/status`'s `path` and
+  `etaMinutes` fields are already there for it to fill in.
+- **Admin panel** (section 13–14) — not started, but §6 below already
+  assumes it will be where third-party API keys get configured.
+
+---
+
+## 6. API key handling (security)
+
+**Policy:** third-party API keys belong on the server, configured through
+the (not-yet-built) admin panel — never shipped inside an APK, where
+they're one `unzip` away from being read by anyone.
+
+**One unavoidable, documented exception:** the Google Maps SDK for Android
+renders map tiles on-device and calls Google's servers directly from the
+phone, so its key (`com.google.android.geo.API_KEY` in resident-app's
+`AndroidManifest.xml`, sourced from `local.properties` → `MAPS_API_KEY` via
+Gradle `manifestPlaceholders`, never hardcoded) genuinely has to live in
+the installed app. This is true for every app that renders native Google
+Maps — Uber, Swiggy, Ola all ship this same kind of key in their APKs.
+Google's own mitigation for this isn't concealment, it's **restriction**:
+in Google Cloud Console, restrict the key to
+  - *Application restriction:* Android apps, listing this app's package
+    name (`com.kachrafree.resident`) + your signing certificate's SHA-1
+    fingerprint, and
+  - *API restriction:* Maps SDK for Android only.
+
+Once restricted, the key is useless to anyone outside this exact signed
+app, and a usage quota/budget alert caps the worst case even then. Maps
+SDK for Android rendering itself has no per-load charge; you still need a
+billing account on the Cloud project to get a key issued at all.
+
+**Everything else stays server-side.** Location search (§3.3) is a plain
+request/response call, so unlike map rendering there's no technical reason
+its key can't live entirely on the server — `PlacesApi.kt` calls *our*
+server, never a mapping provider directly, and the server's own
+Places/geocoding key (configured via the future admin panel) is what
+actually talks to Google/Mapbox/whoever. The same should apply to any
+future third-party integration (SMS provider, traffic data, etc.): the
+app calls our server, our server holds the key.

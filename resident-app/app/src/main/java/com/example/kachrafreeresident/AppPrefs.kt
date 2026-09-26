@@ -12,5 +12,6 @@ object AppPrefs {
     const val KEY_PHONE_NUMBER = "phone_number"
     const val KEY_LATITUDE = "latitude"
     const val KEY_LONGITUDE = "longitude"
+    const val KEY_ADDRESS = "address"
     const val KEY_ALERT_MINUTES = "alert_minutes"
 }

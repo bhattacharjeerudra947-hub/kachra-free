@@ -1,11 +1,8 @@
 package com.example.kachrafreeresident
 
-import android.Manifest
+import android.app.Activity
+import android.content.Intent
 import android.content.SharedPreferences
-import android.content.pm.PackageManager
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -16,10 +13,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.core.content.ContextCompat
 import com.example.kachrafreeresident.theme.KachraFreeResidentTheme
 import com.example.kachrafreeresident.ui.main.RegisterScreen
 import com.example.kachrafreeresident.ui.main.StatusScreen
+import com.example.kachrafreeresident.ui.main.TruckMapScreen
+import com.google.android.gms.maps.model.LatLng
 
 class MainActivity : ComponentActivity() {
 
@@ -34,63 +32,44 @@ class MainActivity : ComponentActivity() {
     // right away - no manual "re-render" calls needed.
     private var registered by mutableStateOf(false)
     private var editing by mutableStateOf(false)
+    private var showTruckMap by mutableStateOf(false)
 
     private var phoneNumber by mutableStateOf("")
     private var latitudeText by mutableStateOf("")
     private var longitudeText by mutableStateOf("")
+    private var houseAddress by mutableStateOf<String?>(null)
     private var alertMinutes by mutableStateOf(10)
 
     private var truckStatus by mutableStateOf<ResidentApi.TruckStatus?>(null)
 
-    private val locationPermissionLauncher =
+    // The actual map UI/permissions/search live in LocationPickerActivity -
+    // this just launches it and reads back what the resident picked.
+    private val locationPickerLauncher =
         registerForActivityResult(
-            ActivityResultContracts.RequestMultiplePermissions()
-        ) { permissions ->
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
 
-            val granted =
-                permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+            if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
+            val data = result.data ?: return@registerForActivityResult
 
-            if (granted) {
-                captureCurrentLocation()
-            } else {
-                Toast.makeText(
-                    this,
-                    "Location permission is required to auto-fill your house location",
-                    Toast.LENGTH_LONG
-                ).show()
+            val latitude = data.getDoubleExtra(LocationPickerActivity.EXTRA_RESULT_LATITUDE, Double.NaN)
+            val longitude = data.getDoubleExtra(LocationPickerActivity.EXTRA_RESULT_LONGITUDE, Double.NaN)
+
+            if (!latitude.isNaN() && !longitude.isNaN()) {
+                latitudeText = latitude.toString()
+                longitudeText = longitude.toString()
+                houseAddress = data.getStringExtra(LocationPickerActivity.EXTRA_RESULT_ADDRESS)
             }
         }
 
     // Polls the server for this resident's truck/ETA while the status
-    // screen is visible. Registration itself does not need this - only
-    // showing live status does.
+    // screen (or the map) is visible. Registration itself does not need
+    // this - only showing live status does.
     private val statusHandler = Handler(Looper.getMainLooper())
     private val statusRunnable = object : Runnable {
         override fun run() {
             refreshTruckStatus()
             statusHandler.postDelayed(this, STATUS_POLL_INTERVAL_MS)
-        }
-    }
-
-    // Used only once, to fill in the house location fields during
-    // registration - removes itself as soon as one fix arrives.
-    private val oneShotLocationListener = object : LocationListener {
-
-        override fun onLocationChanged(location: Location) {
-            applyLocation(location)
-            locationManager().removeUpdates(this)
-        }
-
-        override fun onProviderEnabled(provider: String) {}
-        override fun onProviderDisabled(provider: String) {}
-
-        @Deprecated("Deprecated in API 29")
-        override fun onStatusChanged(
-            provider: String?,
-            status: Int,
-            extras: Bundle?
-        ) {
         }
     }
 
@@ -106,31 +85,46 @@ class MainActivity : ComponentActivity() {
         phoneNumber = prefs.getString(AppPrefs.KEY_PHONE_NUMBER, "").orEmpty()
         latitudeText = prefs.getString(AppPrefs.KEY_LATITUDE, "").orEmpty()
         longitudeText = prefs.getString(AppPrefs.KEY_LONGITUDE, "").orEmpty()
+        houseAddress = prefs.getString(AppPrefs.KEY_ADDRESS, null)
         alertMinutes = prefs.getInt(AppPrefs.KEY_ALERT_MINUTES, 10)
 
         setContent {
             KachraFreeResidentTheme {
-                if (registered && !editing) {
-                    StatusScreen(
+                val houseLatLng = latitudeText.toDoubleOrNull()?.let { lat ->
+                    longitudeText.toDoubleOrNull()?.let { lng -> LatLng(lat, lng) }
+                }
+
+                when {
+                    showTruckMap && houseLatLng != null -> TruckMapScreen(
+                        houseLatLng = houseLatLng,
+                        truckLatLng = truckStatus?.let { status ->
+                            val lat = status.truckLatitude
+                            val lng = status.truckLongitude
+                            if (lat != null && lng != null) LatLng(lat, lng) else null
+                        },
+                        pathPoints = truckStatus?.path.orEmpty(),
+                        etaMinutes = truckStatus?.etaMinutes,
+                        truckId = truckStatus?.truckId,
+                        onBack = { showTruckMap = false }
+                    )
+
+                    registered && !editing -> StatusScreen(
                         phoneNumber = phoneNumber,
-                        latitudeText = latitudeText,
-                        longitudeText = longitudeText,
+                        houseLocationLabel = houseLocationLabel(),
                         alertMinutes = alertMinutes,
                         truckStatus = truckStatus,
                         onEdit = {
                             editing = true
                             refreshStatusPolling()
-                        }
+                        },
+                        onViewMap = { showTruckMap = true }
                     )
-                } else {
-                    RegisterScreen(
+
+                    else -> RegisterScreen(
                         phoneNumber = phoneNumber,
                         onPhoneNumberChange = { phoneNumber = it },
-                        latitudeText = latitudeText,
-                        onLatitudeChange = { latitudeText = it },
-                        longitudeText = longitudeText,
-                        onLongitudeChange = { longitudeText = it },
-                        onUseCurrentLocation = { requestLocationAndCapture() },
+                        houseLocationLabel = houseLocationLabel(),
+                        onPickLocation = { launchLocationPicker() },
                         alertMinutes = alertMinutes,
                         onAlertMinutesChange = { alertMinutes = it },
                         isEditing = registered && editing,
@@ -153,6 +147,32 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         statusHandler.removeCallbacks(statusRunnable)
+    }
+
+    private fun houseLocationLabel(): String {
+        houseAddress?.let { return it }
+
+        val lat = latitudeText.toDoubleOrNull()
+        val lng = longitudeText.toDoubleOrNull()
+
+        return if (lat != null && lng != null) {
+            "%.6f, %.6f".format(lat, lng)
+        } else {
+            "Not set yet"
+        }
+    }
+
+    private fun launchLocationPicker() {
+        val intent = Intent(this, LocationPickerActivity::class.java)
+
+        latitudeText.toDoubleOrNull()?.let {
+            intent.putExtra(LocationPickerActivity.EXTRA_INITIAL_LATITUDE, it)
+        }
+        longitudeText.toDoubleOrNull()?.let {
+            intent.putExtra(LocationPickerActivity.EXTRA_INITIAL_LONGITUDE, it)
+        }
+
+        locationPickerLauncher.launch(intent)
     }
 
     private fun refreshStatusPolling() {
@@ -198,6 +218,7 @@ class MainActivity : ComponentActivity() {
             .putString(AppPrefs.KEY_PHONE_NUMBER, phone)
             .putString(AppPrefs.KEY_LATITUDE, latitudeText)
             .putString(AppPrefs.KEY_LONGITUDE, longitudeText)
+            .putString(AppPrefs.KEY_ADDRESS, houseAddress)
             .putInt(AppPrefs.KEY_ALERT_MINUTES, alertMinutes)
             .apply()
 
@@ -208,8 +229,10 @@ class MainActivity : ComponentActivity() {
 
         refreshStatusPolling()
 
+        val address = houseAddress
+
         Thread {
-            val success = ResidentApi.register(phone, latitude, longitude, alertMinutes)
+            val success = ResidentApi.register(phone, latitude, longitude, alertMinutes, address)
             runOnUiThread {
                 Toast.makeText(
                     this,
@@ -222,89 +245,5 @@ class MainActivity : ComponentActivity() {
                 ).show()
             }
         }.start()
-    }
-
-    private fun requestLocationAndCapture() {
-        if (hasLocationPermission()) {
-            captureCurrentLocation()
-        } else {
-            locationPermissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                )
-            )
-        }
-    }
-
-    private fun hasLocationPermission(): Boolean {
-
-        return ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED ||
-        ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-    }
-
-    private fun captureCurrentLocation() {
-
-        val manager = locationManager()
-
-        val provider = when {
-            isProviderEnabled(manager, LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
-            isProviderEnabled(manager, LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
-            else -> null
-        }
-
-        if (provider == null) {
-            Toast.makeText(
-                this,
-                "Turn on Location, or enter your coordinates manually",
-                Toast.LENGTH_LONG
-            ).show()
-            return
-        }
-
-        try {
-            val lastKnown = manager.getLastKnownLocation(provider)
-
-            if (lastKnown != null) {
-                applyLocation(lastKnown)
-                return
-            }
-
-            Toast.makeText(this, "Getting your location...", Toast.LENGTH_SHORT).show()
-
-            manager.requestLocationUpdates(
-                provider,
-                0L,
-                0f,
-                oneShotLocationListener,
-                Looper.getMainLooper()
-            )
-
-        } catch (_: SecurityException) {
-            Toast.makeText(this, "Location permission is required", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    private fun applyLocation(location: Location) {
-        latitudeText = location.latitude.toString()
-        longitudeText = location.longitude.toString()
-    }
-
-    private fun locationManager(): LocationManager {
-        return getSystemService(LocationManager::class.java)
-    }
-
-    private fun isProviderEnabled(manager: LocationManager, provider: String): Boolean {
-        return try {
-            manager.isProviderEnabled(provider)
-        } catch (_: Exception) {
-            false
-        }
     }
 }

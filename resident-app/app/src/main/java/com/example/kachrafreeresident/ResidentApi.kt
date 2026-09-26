@@ -1,5 +1,6 @@
 package com.example.kachrafreeresident
 
+import com.google.android.gms.maps.model.LatLng
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -13,12 +14,19 @@ import org.json.JSONObject
  */
 object ResidentApi {
 
-    /** What the server currently knows about the truck relevant to this resident. */
+    /**
+     * What the server currently knows about the truck relevant to this
+     * resident. [path] is the expected route from the truck to the house
+     * (AGENTS.md section 6) - not a straight line - and is optional: the
+     * server may not compute this yet, in which case the map just shows
+     * both markers with no connecting line.
+     */
     data class TruckStatus(
         val truckId: String?,
         val truckLatitude: Double?,
         val truckLongitude: Double?,
-        val etaMinutes: Int?
+        val etaMinutes: Int?,
+        val path: List<LatLng>
     )
 
     /**
@@ -31,7 +39,8 @@ object ResidentApi {
         phoneNumber: String,
         latitude: Double,
         longitude: Double,
-        alertMinutes: Int
+        alertMinutes: Int,
+        address: String? = null
     ): Boolean {
 
         return try {
@@ -44,15 +53,18 @@ object ResidentApi {
             connection.readTimeout = 5_000
             connection.setRequestProperty("Content-Type", "application/json")
 
-            val body = JSONObject()
+            val json = JSONObject()
                 .put("phoneNumber", phoneNumber)
                 .put("latitude", latitude)
                 .put("longitude", longitude)
                 .put("alertMinutes", alertMinutes)
-                .toString()
+
+            if (!address.isNullOrBlank()) {
+                json.put("address", address)
+            }
 
             connection.outputStream.use { stream ->
-                stream.write(body.toByteArray(Charsets.UTF_8))
+                stream.write(json.toString().toByteArray(Charsets.UTF_8))
             }
 
             val ok = connection.responseCode in 200..299
@@ -98,11 +110,26 @@ object ResidentApi {
                     json.optInt("etaMinutes")
                 } else {
                     null
-                }
+                },
+                path = parsePath(json)
             )
 
         } catch (_: Exception) {
             null
+        }
+    }
+
+    private fun parsePath(json: JSONObject): List<LatLng> {
+        return try {
+            val array = json.optJSONArray("path") ?: return emptyList()
+            (0 until array.length()).map { index ->
+                val point = array.getJSONObject(index)
+                LatLng(point.getDouble("latitude"), point.getDouble("longitude"))
+            }
+        } catch (_: Exception) {
+            // Malformed path shouldn't take down the rest of the status -
+            // just show the markers with no route line.
+            emptyList()
         }
     }
 }
