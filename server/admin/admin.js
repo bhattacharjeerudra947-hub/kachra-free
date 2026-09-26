@@ -134,9 +134,6 @@ function truckRow(truck) {
     warning = ` <span class="bad" title="${esc(truck.routingError)}">⚠</span>`;
   }
 
-  let lastUpdate = "never";
-  if (truck.secondsSinceUpdate !== null) lastUpdate = ago(truck.secondsSinceUpdate);
-
   let today = "";
   if (truck.stops.length > 0) {
     today = `reached stop ${truck.stopsVisitedToday} of ${truck.stops.length}`;
@@ -148,7 +145,7 @@ function truckRow(truck) {
   return `
     <tr>
       <td><b>${esc(truck.id)}</b>${warning}</td>
-      <td class="${truck.active ? "ok" : "bad"}">${lastUpdate}</td>
+      <td>${onlinePill(truck)} <span class="hint">${lastLocationText(truck)}</span></td>
       <td>${truck.stops.length}</td>
       <td>${today}</td>
       <td>${road}</td>
@@ -160,15 +157,33 @@ function truckRow(truck) {
     </tr>`;
 }
 
+// "Online" = sent its location within the last 2 minutes (the server's
+// ACTIVE_SECONDS); otherwise "Offline".
+function onlinePill(truck) {
+  if (truck.active) return `<span class="online-pill on">● Online</span>`;
+  return `<span class="online-pill off">● Offline</span>`;
+}
+
+function lastLocationText(truck) {
+  if (truck.secondsSinceUpdate === null) return "never sent a location";
+  return "last location " + ago(truck.secondsSinceUpdate);
+}
+
 function renderTrucks() {
   let html = "";
+  let online = 0;
   for (const truck of state.trucks) {
     html += truckRow(truck);
+    if (truck.active) online += 1;
   }
   if (html === "") {
     html = `<tr><td colspan="7" class="hint">No trucks yet.</td></tr>`;
   }
   find("#trucks tbody").innerHTML = html;
+
+  const offline = state.trucks.length - online;
+  find("#trucks-summary").innerHTML =
+    `<span class="online-pill on">${online} online</span> <span class="online-pill off">${offline} offline</span>`;
 }
 
 // One click listener for the whole table. The buttons carry the truck ID
@@ -393,15 +408,14 @@ function residentRow(r) {
   }
   return `
     <tr>
-      <td>${esc(r.phoneNumber)}</td>
-      <td>${esc(r.name)} <span class="hint">${esc(r.source)}</span></td>
+      <td><b>${esc(r.username)}</b></td>
       <td>${esc(r.truckId)}</td>
       <td>${stop}</td>
       <td>${r.alertMinutes} min</td>
       <td>${esc(r.message)}</td>
       <td>
-        <button data-edit-resident="${esc(r.phoneNumber)}">Edit</button>
-        <button class="danger" data-delete-resident="${esc(r.phoneNumber)}">Delete</button>
+        <button data-edit-resident="${esc(r.username)}">Edit</button>
+        <button class="danger" data-delete-resident="${esc(r.username)}">Delete</button>
       </td>
     </tr>`;
 }
@@ -412,7 +426,7 @@ function renderResidents() {
     html += residentRow(r);
   }
   if (html === "") {
-    html = `<tr><td colspan="7" class="hint">No residents yet.</td></tr>`;
+    html = `<tr><td colspan="6" class="hint">No residents yet.</td></tr>`;
   }
   find("#residents tbody").innerHTML = html;
 }
@@ -430,34 +444,34 @@ function renderTruckSelect() {
   select.value = current;
 }
 
-function residentByPhone(phone) {
+function residentByUsername(username) {
   for (const r of state.residents) {
-    if (r.phoneNumber === phone) return r;
+    if (r.username === username) return r;
   }
   return null;
 }
 
 find("#residents").addEventListener("click", async (event) => {
-  const editPhone = event.target.dataset.editResident;
-  const deletePhone = event.target.dataset.deleteResident;
+  const editUsername = event.target.dataset.editResident;
+  const deleteUsername = event.target.dataset.deleteResident;
 
-  if (editPhone) {
+  if (editUsername) {
     // Fill the form below with this resident, ready to edit.
-    const r = residentByPhone(editPhone);
-    residentForm.phoneNumber.value = r.phoneNumber;
-    residentForm.fullName.value = r.name;
+    const r = residentByUsername(editUsername);
+    residentForm.username.value = r.username;
     residentForm.truckId.value = r.truckId;
     residentForm.address.value = r.address || "";
     residentForm.latitude.value = r.lat;
     residentForm.longitude.value = r.lng;
     residentForm.alertMinutes.value = r.alertMinutes;
-    find("#resident-form-title").textContent = "Edit resident " + r.phoneNumber;
+    find("#resident-form-title").textContent = "Edit resident " + r.username;
+    find("#resident-editor").hidden = false;
     residentForm.scrollIntoView({ behavior: "smooth" });
   }
 
-  if (deletePhone && confirm(`Delete resident ${deletePhone}?`)) {
+  if (deleteUsername && confirm(`Delete resident ${deleteUsername}?`)) {
     try {
-      await api("DELETE", "/api/admin/residents?phone=" + encodeURIComponent(deletePhone));
+      await api("DELETE", "/api/admin/residents?username=" + encodeURIComponent(deleteUsername));
       refresh();
     } catch (error) {
       showError(error);
@@ -468,8 +482,7 @@ find("#residents").addEventListener("click", async (event) => {
 residentForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const body = {
-    phoneNumber: residentForm.phoneNumber.value,
-    name: residentForm.fullName.value,
+    username: residentForm.username.value,
     truckId: residentForm.truckId.value,
     address: residentForm.address.value,
     latitude: parseFloat(residentForm.latitude.value),
@@ -482,16 +495,19 @@ residentForm.addEventListener("submit", async (event) => {
   }
   try {
     await api("POST", "/api/admin/residents", body);
-    residentForm.reset();
+    closeResidentEditor();
     refresh();
   } catch (error) {
     showError(error);
   }
 });
 
-residentForm.addEventListener("reset", () => {
-  find("#resident-form-title").textContent = "Register a resident";
-});
+function closeResidentEditor() {
+  find("#resident-editor").hidden = true;
+  if (clickMode === "pick-house") setClickMode(null);
+}
+
+find("#cancel-resident").addEventListener("click", closeResidentEditor);
 
 find("#pick-house").addEventListener("click", () => setClickMode("pick-house"));
 
@@ -536,6 +552,20 @@ L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
 // Everything we draw goes in this layer, so it can be cleared in one go.
 const layer = L.layerGroup().addTo(map);
 
+// Each truck gets its own colour, used for its truck icon, its stops and
+// its roads. Trucks are listed sorted by ID, so a truck keeps its colour.
+const TRUCK_COLORS = ["#1c7ed6", "#e8590c", "#2f9e44", "#ae3ec9", "#e03131", "#0c8599", "#f59f00", "#5f3dc4"];
+
+function truckColor(truckId) {
+  for (let i = 0; i < state.trucks.length; i++) {
+    if (state.trucks[i].id === truckId) return TRUCK_COLORS[i % TRUCK_COLORS.length];
+  }
+  return TRUCK_COLORS[0];
+}
+
+// Material "local shipping" truck icon, as an inline SVG (no image files).
+const TRUCK_SVG = '<svg viewBox="0 0 24 24"><path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h6c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4zM6 18.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm13.5-9 1.96 2.5H17V9.5h2.5zm-1.5 9c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>';
+
 function setClickMode(mode) {
   clickMode = mode;
   find("#map").classList.toggle("picking", mode !== null);
@@ -548,15 +578,18 @@ function setClickMode(mode) {
     find("#map-hint").textContent = "Click the map where the resident's house is.";
   } else {
     find("#add-stops").textContent = "Add stops by clicking the map";
-    find("#map-hint").textContent = "Orange: trucks (grey when offline) · Numbered: stops, in collection order · " +
-      "Green: residents · Grey line: roads driven today";
+    find("#map-hint").textContent = "Each truck has its own colour: its truck icon, numbered stops (in collection order) " +
+      "and roads · Grey truck: offline · Dark dots: residents · Grey line: roads the open truck drove today";
   }
 }
 
-// A small labelled dot. Leaflet's divIcon takes HTML, so the label is escaped.
-function marker(lat, lng, className, text, title) {
-  const icon = L.divIcon({ className: "", html: `<div class="pin ${className}">${esc(text)}</div>`, iconSize: null });
-  L.marker([lat, lng], { icon: icon, title: title }).addTo(layer);
+// Leaflet's divIcon takes HTML, so all labels are escaped.
+// onTop: draw above the other markers. Leaflet otherwise stacks markers by
+// latitude, so a stop further south would cover a truck.
+function addMarker(lat, lng, html, title, onTop = false) {
+  const icon = L.divIcon({ className: "", html: html, iconSize: null });
+  const zIndexOffset = onTop ? 1000 : 0;
+  L.marker([lat, lng], { icon: icon, title: title, zIndexOffset: zIndexOffset }).addTo(layer);
 }
 
 function line(points, color, weight) {
@@ -564,19 +597,36 @@ function line(points, color, weight) {
   L.polyline(points, { color: color, weight: weight, opacity: 0.85, interactive: false }).addTo(layer);
 }
 
-function drawStops(stops, selected) {
-  let color = "#1c7ed6";
-  let className = "stop";
+function drawTruck(truck, color) {
+  let className = "truck-marker";
+  let title = truck.id + ": online, " + lastLocationText(truck);
+  if (!truck.active) {
+    className += " offline";
+    title = truck.id + ": offline, " + lastLocationText(truck);
+  }
+  // Label: "TRUCK-1 · 12s ago" (a truck on the map has sent a location, so
+  // secondsSinceUpdate is set).
+  const html = `<div class="${className}">
+      <div class="icon" style="background:${color}">${TRUCK_SVG}</div>
+      <div class="label">${esc(truck.id)} · ${ago(truck.secondsSinceUpdate)}</div>
+    </div>`;
+  addMarker(truck.lat, truck.lng, html, title, true);
+}
+
+// view: the part of the map on screen. Only what's inside it is drawn.
+function drawStops(stops, color, selected, view) {
+  let className = "pin stop";
   let weight = 3;
   if (selected) {
-    color = "#d9480f";
-    className = "stop selected";
+    className += " selected";
     weight = 5;
   }
 
   for (let i = 0; i < stops.length; i++) {
     const stop = stops[i];
-    marker(stop.lat, stop.lng, className, String(i + 1), stop.name);
+    if (view.contains([stop.lat, stop.lng])) {
+      addMarker(stop.lat, stop.lng, `<div class="${className}" style="background:${color}">${i + 1}</div>`, stop.name);
+    }
 
     // The road to the next stop: as driven, or the shortest road route (from
     // the server). A leg with neither isn't drawn. Unsaved edits may have
@@ -584,50 +634,68 @@ function drawStops(stops, selected) {
     const isLast = i === stops.length - 1;
     const hasUnsavedEdits = selected && draftDirty;
     if (!isLast && stop.legPoints && !hasUnsavedEdits) {
-      line(stop.legPoints, color, weight);
+      if (L.latLngBounds(stop.legPoints).intersects(view)) {
+        line(stop.legPoints, color, weight);
+      }
     }
   }
 }
 
+// On first load, frame all the trucks (or, if none has reported yet, all
+// their stops).
+function fitAllTrucks() {
+  const points = [];
+  for (const truck of state.trucks) {
+    if (truck.lat !== null) points.push([truck.lat, truck.lng]);
+  }
+  if (points.length === 0) {
+    for (const truck of state.trucks) {
+      for (const stop of truck.stops) points.push([stop.lat, stop.lng]);
+    }
+  }
+  if (points.length === 0) return false;
+  map.fitBounds(points, { padding: [60, 60], maxZoom: 16 });
+  return true;
+}
+
 function renderMap(zoomToSelected = false) {
+  if (!mapFitted) mapFitted = fitAllTrucks();
+  if (zoomToSelected && stopsDraft && stopsDraft.length > 0) {
+    const focus = [];
+    for (const stop of stopsDraft) focus.push([stop.lat, stop.lng]);
+    map.fitBounds(focus, { padding: [40, 40], maxZoom: 16 });
+  }
+
   layer.clearLayers();
-  const allPoints = []; // everything on the map, to zoom to on first load
+  // A bit more than the screen, so things just off the edge are ready
+  // when panning.
+  const view = map.getBounds().pad(0.2);
 
   for (const truck of state.trucks) {
+    const color = truckColor(truck.id);
     const selected = truck.id === selectedTruckId;
     // The selected truck shows the draft, including unsaved edits.
     const stops = selected ? stopsDraft : truck.stops;
-    drawStops(stops, selected);
-    for (const stop of stops) allPoints.push([stop.lat, stop.lng]);
+    drawStops(stops, color, selected, view);
 
-    if (truck.lat !== null) {
-      if (truck.active) {
-        marker(truck.lat, truck.lng, "truck", truck.id, truck.id);
-      } else {
-        marker(truck.lat, truck.lng, "truck offline", truck.id, truck.id + " (offline)");
-      }
-      allPoints.push([truck.lat, truck.lng]);
+    if (truck.lat !== null && view.contains([truck.lat, truck.lng])) {
+      drawTruck(truck, color);
     }
   }
 
   if (trackPoints.length > 1) line(trackPoints, "#495057", 2);
 
   for (const r of state.residents) {
-    marker(r.lat, r.lng, "resident", "", (r.name || r.phoneNumber) + ": " + r.message);
-    allPoints.push([r.lat, r.lng]);
-  }
-
-  // Zoom to fit: everything on first load, or one truck's stops when it's opened.
-  let focus = allPoints;
-  if (zoomToSelected && stopsDraft && stopsDraft.length > 0) {
-    focus = [];
-    for (const stop of stopsDraft) focus.push([stop.lat, stop.lng]);
-  }
-  if ((!mapFitted || zoomToSelected) && focus.length > 0) {
-    map.fitBounds(focus, { padding: [40, 40], maxZoom: 16 });
-    mapFitted = true;
+    if (view.contains([r.lat, r.lng])) {
+      addMarker(r.lat, r.lng, `<div class="pin resident"></div>`, r.username + ": " + r.message);
+    }
   }
 }
+
+// Panning or zooming shows a different part of the map: draw what's there now.
+map.on("moveend", () => {
+  if (state) renderMap();
+});
 
 map.on("click", (event) => {
   // 6 decimal places is about 10 cm: plenty.

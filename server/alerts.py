@@ -15,8 +15,8 @@ import eta
 
 def check_alerts(data, truck_id):
     """Caller holds db.lock."""
-    for phone, resident in data["residents"].items():
-        if resident.get("truckId") != truck_id:
+    for username, resident in data["residents"].items():
+        if resident["truckId"] != truck_id:
             continue
 
         status = eta.resident_status(data, resident)
@@ -25,7 +25,7 @@ def check_alerts(data, truck_id):
         if status["etaMinutes"] > resident["alertMinutes"]:
             continue
 
-        key = f"{phone}|{status['runId']}"
+        key = f"{username}|{status['runId']}"
         if key in data["alerts"]:
             continue
 

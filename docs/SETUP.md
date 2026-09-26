@@ -10,13 +10,14 @@
 | Android Build Tools 36.0.0 | Build/package APK                |
 | Python 3.10+               | Runs the server + admin panel (`server/`), standard library only |
 | ngrok (free account)       | Exposes the laptop server to the internet |
+| Android Emulator + Android 36 image (optional) | A virtual phone for testing without a real one (section 11) |
 
 Gradle isn't installed separately: each app's `gradlew` / `gradlew.bat`
 downloads the exact Gradle version it needs on first use.
 
 Maps (both the resident app and the admin panel), road routes, drive times
 and location search all use free OpenStreetMap services (osmdroid, OSRM,
-Nominatim). None of them need an account, key or card.
+Nominatim, Photon). None of them need an account, key or card.
 
 ---
 
@@ -345,6 +346,11 @@ gradlew assembleDebug
 Builds the APK to `app\build\outputs\apk\debug\app-debug.apk`, without
 installing it anywhere.
 
+The commands here are for **cmd**. In **PowerShell**, put `.\` in front
+(`.\gradlew assembleDebug`), because PowerShell doesn't run programs from the
+current folder by name. Otherwise it fails with
+`The term 'gradlew' is not recognized`.
+
 With a phone connected over USB (Developer options → USB debugging on, then
 accept the "Allow USB debugging?" prompt) and showing up in `adb devices`:
 
@@ -411,6 +417,109 @@ section 14.
 
 ---
 
+## 11. Android emulator (optional)
+
+A virtual Android phone on the laptop, for smoke-testing both apps without
+a real phone. Needs about 3 GB of disk and hardware virtualization (on
+Windows 11 this is the built-in Windows Hypervisor Platform).
+
+### Install
+
+Either with `sdkmanager` (about 2 GB, can be slow):
+
+```cmd
+sdkmanager "emulator" "system-images;android-36;google_apis;x86_64"
+```
+
+Or faster, by downloading the same two files in a browser / download manager:
+
+| What | Link |
+|---|---|
+| Emulator 37.1.11 | https://dl.google.com/android/repository/emulator-windows_x64-15917651.zip |
+| Android 36 image (Google APIs, x86_64) | https://dl.google.com/android/repository/sys-img/google_apis/x86_64-36_r07.zip |
+
+and extracting them so the final structure is:
+
+```text
+C:\Android\emulator\emulator.exe
+C:\Android\system-images\android-36\google_apis\x86_64\system.img
+```
+
+(The emulator zip contains the `emulator` folder, so extract it into
+`C:\Android\`. The image zip contains the `x86_64` folder, so extract it into
+`C:\Android\system-images\android-36\google_apis\`.)
+
+The `google_apis` image is used, not the plain one, so the resident app's
+"use my location" and address lookup work.
+
+Add to `PATH`:
+
+```text
+C:\Android\emulator
+```
+
+Open a new terminal.
+
+Verify:
+
+```cmd
+emulator -accel-check
+```
+
+Expected:
+
+```text
+WHPX(10.0.26200) is installed and usable.
+```
+
+If it says WHPX isn't available: **Turn Windows features on or off** →
+tick **Windows Hypervisor Platform** → reboot.
+
+### Create the virtual phone (once)
+
+```cmd
+avdmanager create avd -n kachra_test -k "system-images;android-36;google_apis;x86_64" -d pixel_7
+```
+
+Answer `no` to "custom hardware profile". An error about a missing
+`devices.xml` can be ignored.
+
+Verify:
+
+```cmd
+emulator -list-avds
+```
+
+Expected:
+
+```text
+kachra_test
+```
+
+### Use it
+
+Start it (a phone window opens; the first boot takes a minute or two):
+
+```cmd
+emulator -avd kachra_test
+```
+
+If the window crashes or stays black, use software graphics instead:
+
+```cmd
+emulator -avd kachra_test -gpu swiftshader_indirect
+```
+
+Once it's up, it shows in `adb devices` as `emulator-5554`, and
+`gradlew installDebug` (section 9) installs onto it like onto a phone. With
+a real phone connected too, target one with `adb -s <device-id>`.
+
+The apps reach the server through the ngrok URL exactly as on a phone.
+Fake the emulator's GPS position from the emulator window: **⋯ (Extended
+controls) → Location**, set a point and press **Set location**.
+
+---
+
 # Final Verification
 
 Run:
@@ -453,6 +562,7 @@ API        → Android 36
 BuildTools → 36.0.0
 Python     → 3.10+
 ngrok      → 3.x (authtoken configured, static domain reserved)
+Emulator   → optional: kachra_test listed by `emulator -list-avds`
 ```
 
 No Android Studio is required. Build an app with `gradlew assembleDebug` from its folder.

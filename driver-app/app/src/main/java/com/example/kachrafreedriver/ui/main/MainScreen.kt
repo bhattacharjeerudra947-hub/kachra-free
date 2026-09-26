@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -25,6 +26,8 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 fun MainScreen(
+    serverReachable: Boolean?,
+    checkingTruck: Boolean,
     truckId: String,
     onTruckIdChange: (String) -> Unit,
     tracking: Boolean,
@@ -41,10 +44,18 @@ fun MainScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .systemBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(24.dp)
         ) {
-            Text("Kachra Free Driver", style = MaterialTheme.typography.headlineMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Kachra Free Driver",
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.weight(1f)
+                )
+                ServerIndicator(serverReachable)
+            }
 
             Spacer(Modifier.height(24.dp))
 
@@ -80,9 +91,17 @@ fun MainScreen(
 
             Button(
                 onClick = if (tracking) onStopTracking else onStartTracking,
+                enabled = !checkingTruck,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text(if (tracking) "Stop sharing location" else "Start sharing location")
+                val label = if (tracking) {
+                    "Stop sharing location"
+                } else if (checkingTruck) {
+                    "Checking Truck ID..."
+                } else {
+                    "Start sharing location"
+                }
+                Text(label)
             }
 
             if (tracking) {

@@ -70,8 +70,8 @@ class AlertService : Service() {
         when (intent?.action) {
             ACTION_STOP -> stopWatching()
             // ACTION_START and null (Android restarting us after being
-            // killed) both mean the same thing here: watch for this phone's
-            // registration, whichever that currently is.
+            // killed) both mean the same thing here: watch for this
+            // resident's registration, whichever that currently is.
             else -> startWatching()
         }
         // Ask Android to restart this service if it's killed: alerts should
@@ -80,9 +80,8 @@ class AlertService : Service() {
     }
 
     private fun startWatching() {
-        val phone = prefs.getString(AppPrefs.KEY_PHONE_NUMBER, null)
-
-        if (phone.isNullOrBlank() || !prefs.getBoolean(AppPrefs.KEY_REGISTERED, false)) {
+        val username = prefs.getString(AppPrefs.KEY_USERNAME, "").orEmpty()
+        if (!prefs.getBoolean(AppPrefs.KEY_REGISTERED, false) || username.isBlank()) {
             stopSelf()
             return
         }
@@ -118,16 +117,15 @@ class AlertService : Service() {
 
     /** Runs on the main thread; the actual network call happens on a background thread. */
     private fun poll() {
-        val phone = prefs.getString(AppPrefs.KEY_PHONE_NUMBER, null)
-        if (phone == null) return
+        val username = prefs.getString(AppPrefs.KEY_USERNAME, "").orEmpty()
 
         Thread {
-            var status = ServerApi.fetchStatus(phone)
+            var status = ServerApi.fetchStatus(username)
 
             // The server doesn't know us yet - the registration probably
             // happened while it was unreachable. Send it again now.
             if (status?.notRegistered == true) {
-                status = retryRegistration(phone)
+                status = retryRegistration(username)
             }
 
             lastStatus = status
@@ -140,7 +138,7 @@ class AlertService : Service() {
     }
 
     /** Blocking; called from a background thread. */
-    private fun retryRegistration(phone: String): ServerApi.TruckStatus? {
+    private fun retryRegistration(username: String): ServerApi.TruckStatus? {
         val truckId = prefs.getString(AppPrefs.KEY_TRUCK_ID, "").orEmpty()
         val latitude = prefs.getString(AppPrefs.KEY_LATITUDE, "").orEmpty().toDoubleOrNull()
         val longitude = prefs.getString(AppPrefs.KEY_LONGITUDE, "").orEmpty().toDoubleOrNull()
@@ -149,8 +147,8 @@ class AlertService : Service() {
         val alertMinutes = prefs.getInt(AppPrefs.KEY_ALERT_MINUTES, 10)
         val address = prefs.getString(AppPrefs.KEY_ADDRESS, null)
 
-        return when (ServerApi.register(phone, truckId, latitude, longitude, alertMinutes, address)) {
-            ServerApi.RegisterResult.OK -> ServerApi.fetchStatus(phone)
+        return when (ServerApi.register(username, truckId, latitude, longitude, alertMinutes, address)) {
+            ServerApi.RegisterResult.OK -> ServerApi.fetchStatus(username)
             ServerApi.RegisterResult.UNKNOWN_TRUCK -> ServerApi.TruckStatus(
                 message = "The server doesn't know truck $truckId. Check the Truck ID in Edit registration."
             )

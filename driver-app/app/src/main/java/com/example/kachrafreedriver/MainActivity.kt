@@ -25,6 +25,9 @@ class MainActivity : ComponentActivity() {
         // "Add stop" waits this long before sending, with an Undo button,
         // in case the button was pressed by accident.
         private const val ADD_STOP_DELAY_MS = 20_000L
+
+        // How often to check the server is reachable, for the pill at the top.
+        private const val PING_INTERVAL_MS = 10_000L
     }
 
     private lateinit var prefs: SharedPreferences
@@ -36,6 +39,10 @@ class MainActivity : ComponentActivity() {
     private var serverText by mutableStateOf<String?>(null)
     private var stopNames by mutableStateOf<List<String>>(emptyList())
     private var pendingStopSecondsLeft by mutableStateOf<Int?>(null)
+    // null until the first ping finishes.
+    private var serverReachable by mutableStateOf<Boolean?>(null)
+    // true while asking the server whether the Truck ID exists.
+    private var checkingTruck by mutableStateOf(false)
 
     // The location captured when "Add stop" was pressed, waiting to be sent.
     private var pendingStop: LocationService.LocationSnapshot? = null
@@ -48,6 +55,18 @@ class MainActivity : ComponentActivity() {
         override fun run() {
             refreshFromService()
             uiHandler.postDelayed(this, 1_000L)
+        }
+    }
+
+    // Checks the server is reachable every PING_INTERVAL_MS while visible,
+    // whether or not tracking is on.
+    private val pingRunnable = object : Runnable {
+        override fun run() {
+            Thread {
+                val reachable = ServerApi.ping()
+                runOnUiThread { serverReachable = reachable }
+            }.start()
+            uiHandler.postDelayed(this, PING_INTERVAL_MS)
         }
     }
 
@@ -73,6 +92,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             KachraFreeDriverTheme {
                 MainScreen(
+                    serverReachable = serverReachable,
+                    checkingTruck = checkingTruck,
                     truckId = truckId,
                     onTruckIdChange = { truckId = it },
                     tracking = tracking,
@@ -80,7 +101,7 @@ class MainActivity : ComponentActivity() {
                     serverText = serverText,
                     stopNames = stopNames,
                     pendingStopSecondsLeft = pendingStopSecondsLeft,
-                    onStartTracking = { requestPermissionsAndStart() },
+                    onStartTracking = { checkTruckAndStart() },
                     onStopTracking = { stopTracking() },
                     onAddStop = { startAddingStop() },
                     onUndoStop = { undoAddingStop() }
@@ -92,11 +113,13 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         uiHandler.post(refreshRunnable)
+        uiHandler.post(pingRunnable)
     }
 
     override fun onPause() {
         super.onPause()
         uiHandler.removeCallbacks(refreshRunnable)
+        uiHandler.removeCallbacks(pingRunnable)
     }
 
     private fun secondsAgo(elapsedMillis: Long): Long =
@@ -191,12 +214,34 @@ class MainActivity : ComponentActivity() {
         }.start()
     }
 
-    private fun requestPermissionsAndStart() {
+    /** "Start sharing location": first make sure the server knows this Truck ID. */
+    private fun checkTruckAndStart() {
+        truckId = truckId.trim()
         if (truckId.isBlank()) {
             Toast.makeText(this, "Enter this truck's Truck ID first", Toast.LENGTH_SHORT).show()
             return
         }
 
+        checkingTruck = true
+        val id = truckId
+        Thread {
+            val result = ServerApi.checkTruck(id)
+            runOnUiThread {
+                checkingTruck = false
+                when (result) {
+                    ServerApi.TruckCheck.FOUND -> requestPermissionsAndStart()
+                    ServerApi.TruckCheck.UNKNOWN_TRUCK -> Toast.makeText(
+                        this, "No truck with ID $id on the server. Ask the admin to add it.", Toast.LENGTH_LONG
+                    ).show()
+                    ServerApi.TruckCheck.UNREACHABLE -> Toast.makeText(
+                        this, "Can't reach the server to check the Truck ID. Try again.", Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun requestPermissionsAndStart() {
         val permissions = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION

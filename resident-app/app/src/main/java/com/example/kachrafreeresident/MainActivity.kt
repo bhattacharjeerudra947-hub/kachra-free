@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,19 +21,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.example.kachrafreeresident.theme.KachraFreeResidentTheme
+import com.example.kachrafreeresident.ui.main.HomeScreen
 import com.example.kachrafreeresident.ui.main.RegisterScreen
-import com.example.kachrafreeresident.ui.main.StatusScreen
-import com.example.kachrafreeresident.ui.main.TruckMapScreen
 import org.osmdroid.util.GeoPoint
 
 class MainActivity : ComponentActivity() {
 
-    // All the actual server polling happens in AlertService, so alerts keep
+    // The truck status polling happens in AlertService, so alerts keep
     // arriving after this screen (or the whole app) is closed. This just
     // mirrors its result once a second while the screen is visible - a
     // local memory read, not a network call.
+    //
+    // The one network call made here is a tiny ping every PING_INTERVAL_MS
+    // while the screen is open, for the "Server reachable" indicator. It
+    // works before registering too, when AlertService isn't running.
     private companion object {
         private const val UI_REFRESH_MS = 1_000L
+        private const val PING_INTERVAL_MS = 10_000L
     }
 
     private lateinit var prefs: SharedPreferences
@@ -40,9 +45,8 @@ class MainActivity : ComponentActivity() {
     // These back the screen directly: changing one redraws the UI.
     private var registered by mutableStateOf(false)
     private var editing by mutableStateOf(false)
-    private var showTruckMap by mutableStateOf(false)
 
-    private var phoneNumber by mutableStateOf("")
+    private var username by mutableStateOf("")
     private var truckId by mutableStateOf("")
     private var latitudeText by mutableStateOf("")
     private var longitudeText by mutableStateOf("")
@@ -50,6 +54,8 @@ class MainActivity : ComponentActivity() {
     private var alertMinutes by mutableStateOf(10)
 
     private var truckStatus by mutableStateOf<ServerApi.TruckStatus?>(null)
+    // null until the first ping finishes.
+    private var serverReachable by mutableStateOf<Boolean?>(null)
 
     // The map, permissions and search live in LocationPickerActivity. This
     // only launches it and reads back what the resident picked.
@@ -75,8 +81,21 @@ class MainActivity : ComponentActivity() {
     private val uiHandler = Handler(Looper.getMainLooper())
     private val uiRefreshRunnable = object : Runnable {
         override fun run() {
-            truckStatus = AlertService.lastStatus
+            // Keep showing the last status while the server is unreachable
+            // (lastStatus is null then); the server pill says it's offline.
+            val latest = AlertService.lastStatus
+            if (latest != null) truckStatus = latest
             uiHandler.postDelayed(this, UI_REFRESH_MS)
+        }
+    }
+
+    private val pingRunnable = object : Runnable {
+        override fun run() {
+            Thread {
+                val reachable = ServerApi.ping()
+                runOnUiThread { serverReachable = reachable }
+            }.start()
+            uiHandler.postDelayed(this, PING_INTERVAL_MS)
         }
     }
 
@@ -84,13 +103,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         prefs = getSharedPreferences(AppPrefs.FILE_NAME, MODE_PRIVATE)
-        registered = prefs.getBoolean(AppPrefs.KEY_REGISTERED, false)
-        phoneNumber = prefs.getString(AppPrefs.KEY_PHONE_NUMBER, "").orEmpty()
-        truckId = prefs.getString(AppPrefs.KEY_TRUCK_ID, "").orEmpty()
-        latitudeText = prefs.getString(AppPrefs.KEY_LATITUDE, "").orEmpty()
-        longitudeText = prefs.getString(AppPrefs.KEY_LONGITUDE, "").orEmpty()
-        houseAddress = prefs.getString(AppPrefs.KEY_ADDRESS, null)
-        alertMinutes = prefs.getInt(AppPrefs.KEY_ALERT_MINUTES, 10)
+        loadSavedRegistration()
 
         // Covers the case where the app was reopened after AlertService got
         // killed (e.g. by the OS) without the phone rebooting - BootReceiver
@@ -101,32 +114,23 @@ class MainActivity : ComponentActivity() {
             KachraFreeResidentTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val houseLatLng = geoPointOrNull(latitudeText.toDoubleOrNull(), longitudeText.toDoubleOrNull())
-                    val status = truckStatus
 
-                    when {
-                        showTruckMap && houseLatLng != null -> TruckMapScreen(
+                    // Registered: the map is the main page; settings opens
+                    // the registration form to edit it.
+                    if (registered && !editing && houseLatLng != null) {
+                        HomeScreen(
+                            status = truckStatus,
+                            serverReachable = serverReachable,
                             houseLatLng = houseLatLng,
-                            stopLatLng = geoPointOrNull(status?.stopLatitude, status?.stopLongitude),
-                            stopName = status?.stopName,
-                            truckLatLng = geoPointOrNull(status?.truckLatitude, status?.truckLongitude),
-                            pathPoints = status?.path ?: emptyList(),
-                            message = status?.message ?: "Waiting for the server...",
-                            onBack = { showTruckMap = false }
+                            onOpenSettings = { editing = true }
                         )
-
-                        registered && !editing -> StatusScreen(
-                            phoneNumber = phoneNumber,
-                            truckId = truckId,
-                            houseLocationLabel = houseLocationLabel(),
-                            alertMinutes = alertMinutes,
-                            truckStatus = status,
-                            onEdit = { editing = true },
-                            onViewMap = { showTruckMap = true }
-                        )
-
-                        else -> RegisterScreen(
-                            phoneNumber = phoneNumber,
-                            onPhoneNumberChange = { phoneNumber = it },
+                    } else {
+                        // The system Back button leaves the settings page too.
+                        BackHandler(enabled = editing) { cancelEditing() }
+                        RegisterScreen(
+                            serverReachable = serverReachable,
+                            username = username,
+                            onUsernameChange = { username = it },
                             truckId = truckId,
                             onTruckIdChange = { truckId = it },
                             houseLocationLabel = houseLocationLabel(),
@@ -134,7 +138,7 @@ class MainActivity : ComponentActivity() {
                             alertMinutes = alertMinutes,
                             onAlertMinutesChange = { alertMinutes = it },
                             isEditing = registered && editing,
-                            onCancel = { editing = false },
+                            onCancel = { cancelEditing() },
                             onSubmit = { submitRegistration() }
                         )
                     }
@@ -143,14 +147,33 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun loadSavedRegistration() {
+        username = prefs.getString(AppPrefs.KEY_USERNAME, "").orEmpty()
+        // Registered means there's a saved username to register under.
+        registered = prefs.getBoolean(AppPrefs.KEY_REGISTERED, false) && username.isNotBlank()
+        truckId = prefs.getString(AppPrefs.KEY_TRUCK_ID, "").orEmpty()
+        latitudeText = prefs.getString(AppPrefs.KEY_LATITUDE, "").orEmpty()
+        longitudeText = prefs.getString(AppPrefs.KEY_LONGITUDE, "").orEmpty()
+        houseAddress = prefs.getString(AppPrefs.KEY_ADDRESS, null)
+        alertMinutes = prefs.getInt(AppPrefs.KEY_ALERT_MINUTES, 10)
+    }
+
+    /** Leaves the settings page without saving: puts back the saved values. */
+    private fun cancelEditing() {
+        loadSavedRegistration()
+        editing = false
+    }
+
     override fun onResume() {
         super.onResume()
         uiHandler.post(uiRefreshRunnable)
+        uiHandler.post(pingRunnable)
     }
 
     override fun onPause() {
         super.onPause()
         uiHandler.removeCallbacks(uiRefreshRunnable)
+        uiHandler.removeCallbacks(pingRunnable)
     }
 
     /** A map point, or null if either number is missing. */
@@ -194,18 +217,20 @@ class MainActivity : ComponentActivity() {
 
     /** Blocking; call off the main thread. */
     private fun sendRegistration(): ServerApi.RegisterResult {
-        val latitude = latitudeText.toDoubleOrNull()
-        val longitude = longitudeText.toDoubleOrNull()
-        if (latitude == null || longitude == null) return ServerApi.RegisterResult.UNREACHABLE
-        return ServerApi.register(phoneNumber, truckId, latitude, longitude, alertMinutes, houseAddress)
+        // submitRegistration() has already checked these are numbers.
+        val latitude = latitudeText.toDouble()
+        val longitude = longitudeText.toDouble()
+        return ServerApi.register(username, truckId, latitude, longitude, alertMinutes, houseAddress)
     }
 
     private fun submitRegistration() {
-        phoneNumber = phoneNumber.trim()
+        // Usernames aren't case-sensitive: "Asha" and "asha" are the same resident.
+        username = username.trim().lowercase()
         truckId = truckId.trim()
 
-        if (phoneNumber.isBlank()) {
-            Toast.makeText(this, "Enter your phone number", Toast.LENGTH_SHORT).show()
+        val problem = AppPrefs.usernameProblem(username)
+        if (problem != null) {
+            Toast.makeText(this, problem, Toast.LENGTH_SHORT).show()
             return
         }
         if (truckId.isBlank()) {
@@ -241,7 +266,7 @@ class MainActivity : ComponentActivity() {
     private fun saveRegistrationLocally() {
         prefs.edit()
             .putBoolean(AppPrefs.KEY_REGISTERED, true)
-            .putString(AppPrefs.KEY_PHONE_NUMBER, phoneNumber)
+            .putString(AppPrefs.KEY_USERNAME, username)
             .putString(AppPrefs.KEY_TRUCK_ID, truckId)
             .putString(AppPrefs.KEY_LATITUDE, latitudeText)
             .putString(AppPrefs.KEY_LONGITUDE, longitudeText)
