@@ -43,6 +43,10 @@ class LocationService : Service() {
 
         private const val NOTIFICATION_ID = 1001
 
+        // How often we ask for a location fix - and, since minDistance is
+        // 0 below, how often we get one and report it, moving or not.
+        private const val UPDATE_INTERVAL_MS = 10_000L
+
         // True only while this process has the service actively running.
         // MainActivity reads this to know the real tracking state instead
         // of trusting a saved preference that could be stale.
@@ -73,12 +77,7 @@ class LocationService : Service() {
     private val locationListener = object : LocationListener {
 
         override fun onLocationChanged(location: Location) {
-            lastLocation = LocationSnapshot(
-                latitude = location.latitude,
-                longitude = location.longitude,
-                receivedAtElapsedMillis = SystemClock.elapsedRealtime()
-            )
-            uploadLocation(location)
+            reportLocation(location)
         }
 
         override fun onProviderEnabled(provider: String) {
@@ -245,14 +244,21 @@ class LocationService : Service() {
         lastLocation = null
     }
 
-    private fun uploadLocation(location: Location) {
+    /** Shows a new fix on screen/notification and sends it to the server. */
+    private fun reportLocation(location: Location) {
 
-        val text =
+        lastLocation = LocationSnapshot(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            receivedAtElapsedMillis = SystemClock.elapsedRealtime()
+        )
+
+        updateNotification(
             "Truck $truckId: %.6f, %.6f".format(
                 location.latitude,
                 location.longitude
             )
-        updateNotification(text)
+        )
 
         val id = truckId
         val latitude = location.latitude
@@ -260,7 +266,7 @@ class LocationService : Service() {
         val time = location.time
 
         // A plain background thread is enough here: one small HTTP request
-        // every few seconds, no need for a bigger networking library yet.
+        // every 10 seconds, no need for a bigger networking library yet.
         Thread {
             val success = sendLocationToServer(id, latitude, longitude, time)
 
@@ -330,10 +336,12 @@ class LocationService : Service() {
     private fun requestUpdatesFrom(provider: String) {
 
         try {
+            // minDistance is 0 so we still get a fix every UPDATE_INTERVAL_MS
+            // even while the truck is stopped, not just while it's moving.
             locationManager.requestLocationUpdates(
                 provider,
-                10_000L,
-                5f,
+                UPDATE_INTERVAL_MS,
+                0f,
                 locationListener
             )
         } catch (_: Exception) {

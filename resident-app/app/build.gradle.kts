@@ -4,10 +4,10 @@ plugins {
 }
 
 android {
-    namespace = "com.example.kachrafreedriver"
+    namespace = "com.example.kachrafreeresident"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.kachrafree.driver"
+        applicationId = "com.kachrafree.resident"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
