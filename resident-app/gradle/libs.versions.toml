@@ -4,6 +4,8 @@ androidxCore = "1.18.0"
 androidxActivity = "1.13.0"
 androidxComposeBom = "2026.03.01"
 kotlin = "2.3.20"
+playServicesMaps = "19.1.0"
+mapsCompose = "6.2.1"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
@@ -13,6 +15,8 @@ androidx-compose-material3 = { group = "androidx.compose.material3", name = "mat
 androidx-compose-ui = { group = "androidx.compose.ui", name = "ui"}
 androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview"}
 androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling"}
+play-services-maps = { module = "com.google.android.gms:play-services-maps", version.ref = "playServicesMaps" }
+maps-compose = { module = "com.google.maps.android:maps-compose", version.ref = "mapsCompose" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }

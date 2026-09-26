@@ -16,4 +16,9 @@ object ServerConfig {
     fun registerUrl(): String = "$BASE_URL/api/residents/register"
 
     fun statusUrl(): String = "$BASE_URL/api/residents/status"
+
+    // Proxies to whatever geocoding/places provider the server is
+    // configured with (via the admin panel) - the app never holds that
+    // provider's API key. See PlacesApi.kt and docs/PROTOCOL.md.
+    fun placesSearchUrl(): String = "$BASE_URL/api/places/search"
 }

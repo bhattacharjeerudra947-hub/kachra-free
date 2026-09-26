@@ -20,6 +20,21 @@
         android:windowSoftInputMode="adjustResize"
         android:usesCleartextTraffic="true">
 
+        <!-- This is the ONLY third-party key this app embeds, and it has to
+             be: the Maps SDK for Android renders map tiles on-device and
+             calls Google's servers directly, so the key must exist in the
+             installed app. It is not a secret - restrict it in Google Cloud
+             Console (Android app restriction: this package name + your
+             signing certificate's SHA-1, plus API restriction: Maps SDK for
+             Android only) so it's useless to anyone outside this exact
+             signed app. Comes from local.properties via manifestPlaceholders
+             - never hardcoded here. See docs/PROTOCOL.md "API key handling".
+             Location SEARCH does not need a client key - see PlacesApi.kt,
+             which calls the server instead, where that key belongs. -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${mapsApiKey}" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -30,6 +45,10 @@
             </intent-filter>
 
         </activity>
+
+        <activity
+            android:name=".LocationPickerActivity"
+            android:exported="false" />
 
     </application>
 

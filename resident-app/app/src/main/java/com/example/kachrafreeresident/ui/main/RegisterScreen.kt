@@ -31,11 +31,8 @@ private val ALERT_OPTIONS_MINUTES = listOf(5, 10, 15, 30)
 fun RegisterScreen(
     phoneNumber: String,
     onPhoneNumberChange: (String) -> Unit,
-    latitudeText: String,
-    onLatitudeChange: (String) -> Unit,
-    longitudeText: String,
-    onLongitudeChange: (String) -> Unit,
-    onUseCurrentLocation: () -> Unit,
+    houseLocationLabel: String,
+    onPickLocation: () -> Unit,
     alertMinutes: Int,
     onAlertMinutesChange: (Int) -> Unit,
     isEditing: Boolean,
@@ -95,38 +92,18 @@ fun RegisterScreen(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        Row(modifier = Modifier.fillMaxWidth()) {
-
-            OutlinedTextField(
-                value = latitudeText,
-                onValueChange = onLatitudeChange,
-                modifier = Modifier.weight(1f),
-                label = { Text("Latitude") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                colors = fieldColors
-            )
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            OutlinedTextField(
-                value = longitudeText,
-                onValueChange = onLongitudeChange,
-                modifier = Modifier.weight(1f),
-                label = { Text("Longitude") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                colors = fieldColors
-            )
-        }
+        Text(
+            text = houseLocationLabel,
+            style = MaterialTheme.typography.bodyMedium
+        )
 
         Spacer(modifier = Modifier.height(8.dp))
 
         OutlinedButton(
-            onClick = onUseCurrentLocation,
+            onClick = onPickLocation,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Use my current location")
+            Text("Choose on map")
         }
 
         Spacer(modifier = Modifier.height(24.dp))
