@@ -2,12 +2,12 @@
 
 | Dependency                 | Purpose                          |
 | -------------------------- | -------------------------------- |
-| JDK 17                     | Java runtime/compiler            |
+| JDK 17                     | Runs Gradle/Android build tools  |
 | Android SDK                | Android development/build tools  |
 | Android Command-Line Tools | Manage Android SDK packages      |
 | Android Platform Tools     | `adb` device communication     |
 | Android SDK Platform 36    | Android API used for compilation |
-| Android Build Tools 36.1.0 | Build/package APK                |
+| Android Build Tools 36.0.0 | Build/package APK                |
 | Gradle 9.6.0               | Build system                     |
 
 ---
