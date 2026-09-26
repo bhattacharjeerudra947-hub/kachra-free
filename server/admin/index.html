@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kachra Free Admin</title>
+  <!-- Leaflet: small free map library, OpenStreetMap tiles, no API key. -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+
+<header>
+  <h1>Kachra Free Admin</h1>
+  <span id="status">Loading…</span>
+</header>
+
+<section id="alerts-section">
+  <h2>Alerts</h2>
+  <ul id="system-alerts"></ul>
+</section>
+
+<section id="map-section">
+  <div id="map"></div>
+  <p id="map-hint" class="hint"></p>
+</section>
+
+<main>
+
+  <section class="wide">
+    <h2>Trucks</h2>
+    <table id="trucks">
+      <thead><tr>
+        <th>Truck ID</th><th>Last update</th><th>Stops</th><th>Today</th>
+        <th>Road to next stop</th><th>History</th><th></th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <form id="truck-form" class="row">
+      <input name="truckId" placeholder="Truck ID, e.g. TRUCK-1" required>
+      <button>Add truck</button>
+    </form>
+    <p class="hint">Trucks also appear here automatically when a driver app first sends a location or adds a stop.</p>
+  </section>
+
+  <section id="truck-editor" class="wide" hidden>
+    <h2 id="truck-editor-title"></h2>
+    <p class="hint">Stops are collection points where the truck parks and nearby residents bring their garbage.
+      The order here is the collection order. Each resident is served at the stop nearest their house.
+      The road between stops is the one the truck actually drove, or the shortest road route until it has.</p>
+    <p id="routing-error" class="bad"></p>
+    <ol id="stops"></ol>
+    <div class="row">
+      <button id="add-stops">Add stops by clicking the map</button>
+      <button id="save-stops" class="primary">Save stops</button>
+      <button id="discard-stops">Discard changes</button>
+      <span id="unsaved" class="hint"></span>
+    </div>
+    <div class="row">
+      <label class="inline"><input type="checkbox" id="show-track"> Show the roads it drove today (GPS)</label>
+      <button id="demo-generate" title="Adds 14 past days of made-up collection history">Generate demo history</button>
+      <button id="demo-clear">Clear demo history</button>
+      <button id="close-truck">Close</button>
+    </div>
+  </section>
+
+  <section class="wide">
+    <h2>Residents</h2>
+    <table id="residents">
+      <thead><tr>
+        <th>Phone</th><th>Name</th><th>Truck</th><th>Collection point</th>
+        <th>Alert</th><th>Right now</th><th></th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <h3 id="resident-form-title">Register a resident</h3>
+    <p class="hint">For people who need help registering. Creates exactly the same kind of record as the app does.</p>
+    <form id="resident-form" class="grid-form">
+      <label>Phone number <input name="phoneNumber" required placeholder="+91..."></label>
+      <label>Name <input name="fullName"></label>
+      <label>Truck ID <select name="truckId" required></select></label>
+      <label class="span">Address <input name="address"></label>
+      <label>Latitude <input name="latitude" required></label>
+      <label>Longitude <input name="longitude" required></label>
+      <button type="button" id="pick-house">Pick house on map</button>
+      <label>Alert when truck is
+        <select name="alertMinutes">
+          <option value="5">5 min away</option>
+          <option value="10" selected>10 min away</option>
+          <option value="15">15 min away</option>
+          <option value="30">30 min away</option>
+        </select>
+      </label>
+      <div class="row span">
+        <button class="primary">Save resident</button>
+        <button type="reset">Clear</button>
+      </div>
+    </form>
+  </section>
+
+  <section>
+    <h2>Settings</h2>
+    <form id="settings-form" class="grid-form">
+      <label>Stop radius (m) <input name="stopRadiusMeters" type="number" step="any"></label>
+      <label>Default time per stop (s) <input name="secondsPerStop" type="number" step="any"></label>
+      <label>Road refresh (min) <input name="routeRefreshMinutes" type="number" step="any"></label>
+      <label>Average car speed, fallback (km/h) <input name="fallbackSpeedKmh" type="number" step="any"></label>
+      <label>Search country code <input name="searchCountryCodes" placeholder="e.g. in"></label>
+      <p class="hint span">
+        ETA = drive time along real roads + typical collecting time at each stop before the resident's.<br>
+        Stop radius: how close the truck must be to count as "at" a stop.
+        Default time per stop: for stops with no collection history yet.
+        Road refresh: how often the road from each moving truck to its next stop is re-fetched.
+        Average car speed: rough drive times if the route server can't be reached (shown under Alerts).
+        Search country code: narrows the resident app's location search.</p>
+      <div class="row span"><button class="primary">Save settings</button></div>
+    </form>
+  </section>
+
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/admin/admin.js"></script>
+</body>
+</html>

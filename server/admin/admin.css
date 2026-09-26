@@ -1,0 +1,100 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: #1f2328;
+  background: #f5f6f8;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: 12px 20px;
+  background: #2f6f3e;
+  color: #fff;
+}
+
+header h1 { margin: 0; font-size: 20px; }
+#status { font-size: 13px; opacity: 0.85; }
+
+#alerts-section { margin: 16px 20px 0; }
+#system-alerts { margin: 0; padding-left: 20px; }
+#system-alerts li { margin: 4px 0; font-weight: normal; }
+
+#map-section { padding: 16px 20px 0; }
+#map { height: 55vh; border-radius: 8px; border: 1px solid #d0d7de; }
+#map.picking { cursor: crosshair; }
+
+main {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 16px;
+  padding: 16px 20px 40px;
+}
+
+section {
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  padding: 12px 16px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+#map-section { background: none; border: none; }
+section.wide { grid-column: 1 / -1; }
+
+h2 { margin: 0 0 8px; font-size: 16px; }
+h3 { margin: 16px 0 4px; font-size: 14px; }
+.hint { color: #656d76; font-size: 12px; margin: 4px 0 8px; }
+
+table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eaeef2; vertical-align: top; }
+th { font-weight: 600; font-size: 12px; color: #656d76; }
+
+.ok { color: #1a7f37; font-weight: 600; }
+.bad { color: #cf222e; font-weight: 600; }
+
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+
+.grid-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px 12px;
+  align-items: end;
+}
+.grid-form .span { grid-column: 1 / -1; }
+
+label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: #656d76; }
+
+input, select, button { font: inherit; padding: 6px 8px; border: 1px solid #d0d7de; border-radius: 6px; }
+input, select { background: #fff; color: #1f2328; min-width: 0; }
+
+button { background: #f6f8fa; cursor: pointer; }
+button:hover { background: #eaeef2; }
+button.primary { background: #2f6f3e; border-color: #2f6f3e; color: #fff; }
+button.primary:hover { background: #255a32; }
+button.danger { color: #cf222e; }
+
+#stops { padding-left: 24px; margin: 4px 0; }
+#stops li { margin: 4px 0; }
+#stops li input { width: 30%; min-width: 140px; }
+#stops li button { padding: 2px 8px; }
+
+label.inline { flex-direction: row; align-items: center; gap: 6px; font-size: 13px; color: #1f2328; }
+
+/* Map markers (Leaflet divIcons). Centred on their point. */
+.pin {
+  transform: translate(-50%, -50%);
+  width: max-content;
+  min-width: 22px; height: 22px; padding: 0 5px; border-radius: 11px;
+  border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  color: #fff; font: 600 11px/18px system-ui, sans-serif; text-align: center;
+}
+.pin.stop { background: #1c7ed6; }
+.pin.stop.selected { background: #d9480f; }
+.pin.truck { background: #f76707; height: 26px; line-height: 22px; border-radius: 6px; }
+.pin.truck.offline { background: #868e96; }
+.pin.resident { background: #2f9e44; min-width: 12px; height: 12px; padding: 0; border-radius: 6px; }

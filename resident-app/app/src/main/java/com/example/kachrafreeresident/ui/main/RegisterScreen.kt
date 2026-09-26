@@ -31,6 +31,8 @@ private val ALERT_OPTIONS_MINUTES = listOf(5, 10, 15, 30)
 fun RegisterScreen(
     phoneNumber: String,
     onPhoneNumberChange: (String) -> Unit,
+    truckId: String,
+    onTruckIdChange: (String) -> Unit,
     houseLocationLabel: String,
     onPickLocation: () -> Unit,
     alertMinutes: Int,
@@ -80,6 +82,18 @@ fun RegisterScreen(
             label = { Text("Phone number") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+            colors = fieldColors
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = truckId,
+            onValueChange = onTruckIdChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Truck ID") },
+            supportingText = { Text("The ID of the garbage truck that serves your area, e.g. from your municipality.") },
+            singleLine = true,
             colors = fieldColors
         )
 

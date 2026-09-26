@@ -20,7 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.example.kachrafreeresident.theme.KachraFreeResidentTheme
 import com.example.kachrafreeresident.ui.main.LocationPickerScreen
-import com.google.android.gms.maps.model.LatLng
+import org.osmdroid.util.GeoPoint
 import java.util.Locale
 
 /**
@@ -43,13 +43,13 @@ class LocationPickerActivity : ComponentActivity() {
         private const val DEFAULT_LONGITUDE = 78.9629
     }
 
-    private var moveCameraTo by mutableStateOf<LatLng?>(null)
+    private var moveCameraTo by mutableStateOf<GeoPoint?>(null)
     private var pickedAddress by mutableStateOf<String?>(null)
 
     private var searchQuery by mutableStateOf("")
     private var hasSearched by mutableStateOf(false)
     private var searchFailed by mutableStateOf(false)
-    private var searchResults by mutableStateOf<List<PlacesApi.PlaceResult>>(emptyList())
+    private var searchResults by mutableStateOf<List<ServerApi.PlaceResult>>(emptyList())
 
     private val locationPermissionLauncher =
         registerForActivityResult(
@@ -67,13 +67,12 @@ class LocationPickerActivity : ComponentActivity() {
             }
         }
 
-    // Used only once per "use my location" tap - removes itself as soon as
-    // one fix arrives, same one-shot pattern the driver app avoids using
-    // for anything but this kind of momentary lookup.
+    // One fix per "use my location" tap: it unregisters itself as soon as a
+    // fix arrives. The resident is never tracked continuously.
     private val oneShotLocationListener = object : LocationListener {
 
         override fun onLocationChanged(location: Location) {
-            moveCameraTo = LatLng(location.latitude, location.longitude)
+            moveCameraTo = GeoPoint(location.latitude, location.longitude)
             getSystemService(LocationManager::class.java).removeUpdates(this)
         }
 
@@ -97,9 +96,9 @@ class LocationPickerActivity : ComponentActivity() {
 
         val initialLatLng =
             if (!initialLatitude.isNaN() && !initialLongitude.isNaN()) {
-                LatLng(initialLatitude, initialLongitude)
+                GeoPoint(initialLatitude, initialLongitude)
             } else {
-                LatLng(DEFAULT_LATITUDE, DEFAULT_LONGITUDE)
+                GeoPoint(DEFAULT_LATITUDE, DEFAULT_LONGITUDE)
             }
 
         setContent {
@@ -123,6 +122,7 @@ class LocationPickerActivity : ComponentActivity() {
                         pickedAddress = null
                         reverseGeocode(latLng)
                     },
+                    onCameraMoveDone = { moveCameraTo = null },
                     onLocateMeClick = { requestCurrentLocation() },
                     onConfirm = { latLng -> confirmSelection(latLng) }
                 )
@@ -136,7 +136,7 @@ class LocationPickerActivity : ComponentActivity() {
         if (query.isBlank()) return
 
         Thread {
-            val results = PlacesApi.search(query)
+            val results = ServerApi.searchPlaces(query)
 
             runOnUiThread {
                 hasSearched = true
@@ -190,7 +190,7 @@ class LocationPickerActivity : ComponentActivity() {
             val lastKnown = manager.getLastKnownLocation(provider)
 
             if (lastKnown != null) {
-                moveCameraTo = LatLng(lastKnown.latitude, lastKnown.longitude)
+                moveCameraTo = GeoPoint(lastKnown.latitude, lastKnown.longitude)
                 return
             }
 
@@ -217,7 +217,7 @@ class LocationPickerActivity : ComponentActivity() {
         }
     }
 
-    private fun reverseGeocode(latLng: LatLng) {
+    private fun reverseGeocode(latLng: GeoPoint) {
         Thread {
             val address = try {
                 val geocoder = Geocoder(this, Locale.getDefault())
@@ -234,7 +234,7 @@ class LocationPickerActivity : ComponentActivity() {
         }.start()
     }
 
-    private fun confirmSelection(latLng: LatLng) {
+    private fun confirmSelection(latLng: GeoPoint) {
         val result = Intent().apply {
             putExtra(EXTRA_RESULT_LATITUDE, latLng.latitude)
             putExtra(EXTRA_RESULT_LONGITUDE, latLng.longitude)

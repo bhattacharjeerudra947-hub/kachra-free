@@ -2,42 +2,37 @@
 
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Used only for the one-time "use my current location" button during
-         registration - the resident is never tracked continuously. -->
+    <!-- Only for the one-tap "use my location" button in the house picker.
+         The resident is never tracked continuously. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- osmdroid checks for a connection before downloading map tiles. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- usesCleartextTraffic: allows plain http:// while the server has no https setup yet; remove once the server uses https -->
+    <!-- "Truck is N minutes away" alerts (Android 13+ asks the user). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- AlertService: keeps checking for alerts after the app is closed. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Restarts AlertService after the phone reboots (BootReceiver). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- usesCleartextTraffic: allows plain http:// for local testing
+         (emulator / same Wi-Fi). The ngrok URL is https and doesn't need it. -->
     <application
-        android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.KachraFreeResident"
-        android:windowSoftInputMode="adjustResize"
         android:usesCleartextTraffic="true">
-
-        <!-- This is the ONLY third-party key this app embeds, and it has to
-             be: the Maps SDK for Android renders map tiles on-device and
-             calls Google's servers directly, so the key must exist in the
-             installed app. It is not a secret - restrict it in Google Cloud
-             Console (Android app restriction: this package name + your
-             signing certificate's SHA-1, plus API restriction: Maps SDK for
-             Android only) so it's useless to anyone outside this exact
-             signed app. Comes from local.properties via manifestPlaceholders
-             - never hardcoded here. See docs/PROTOCOL.md "API key handling".
-             Location SEARCH does not need a client key - see PlacesApi.kt,
-             which calls the server instead, where that key belongs. -->
-        <meta-data
-            android:name="com.google.android.geo.API_KEY"
-            android:value="${mapsApiKey}" />
 
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTop">
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -49,6 +44,19 @@
         <activity
             android:name=".LocationPickerActivity"
             android:exported="false" />
+
+        <service
+            android:name=".AlertService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 

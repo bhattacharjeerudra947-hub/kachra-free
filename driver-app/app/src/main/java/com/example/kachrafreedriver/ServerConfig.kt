@@ -1,15 +1,12 @@
 package com.example.kachrafreedriver
 
 /**
- * One place to point the driver app at the real server once it exists.
+ * Where the server is. The one line to change when the server moves.
  *
- * 10.0.2.2 is the special address the Android emulator uses to reach
- * "localhost" on the computer running it - handy for testing against a
- * server running on this machine. Replace BASE_URL with the real server
- * address when it's ready (e.g. "https://kachrafree.example.com").
+ * 10.0.2.2 is how the Android emulator reaches "localhost" on the computer
+ * running it. On a real phone use the ngrok URL (docs/SETUP.md section 8).
+ * Set the same URL in resident-app.
  */
 object ServerConfig {
-    const val BASE_URL = "http://10.0.2.2:8080"
-
-    fun locationUpdateUrl(): String = "$BASE_URL/api/trucks/location"
+    const val BASE_URL = "https://undaunted-ditzy-botany.ngrok-free.dev"
 }
