@@ -1,59 +1,36 @@
 plugins {
-  alias(libs.plugins.android.application)
-  alias(libs.plugins.compose.compiler)
+    id("com.android.application")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
     namespace = "com.example.kachrafreedriver"
     compileSdk = 36
+
     defaultConfig {
         applicationId = "com.kachrafree.driver"
-        minSdk = 24
+        // 26 (Android 8.0): notification channels, which the tracking
+        // notification needs, don't exist below this.
+        minSdk = 26
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
     }
 
-    buildTypes {
-        release {
-            isMinifyEnabled = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-        }
-    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
     buildFeatures {
-      compose = true
-      aidl = false
-      buildConfig = false
-      shaders = false
+        compose = true
     }
-
-    packaging {
-      resources {
-        excludes += "/META-INF/{AL2.0,LGPL2.1}"
-      }
-    }
-}
-
-kotlin {
-    jvmToolchain(17)
 }
 
 dependencies {
-  val composeBom = platform(libs.androidx.compose.bom)
-  implementation(composeBom)
-
-  // Core Android dependencies
-  implementation(libs.androidx.core.ktx)
-  implementation(libs.androidx.activity.compose)
-
-  // Compose
-  implementation(libs.androidx.compose.ui)
-  implementation(libs.androidx.compose.ui.tooling.preview)
-  implementation(libs.androidx.compose.material3)
-  // Tooling (for @Preview in Android Studio)
-  debugImplementation(libs.androidx.compose.ui.tooling)
+    implementation(platform("androidx.compose:compose-bom:2026.03.01"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.core:core:1.18.0")
 }
