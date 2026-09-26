@@ -7,13 +7,17 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -29,11 +33,12 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.example.kachrafreeresident.R
 import com.example.kachrafreeresident.ServerApi
 import java.util.Locale
 import org.osmdroid.events.DelayedMapListener
@@ -47,21 +52,25 @@ private const val DEFAULT_ZOOM = 17.0
 /**
  * Full-screen "drop a pin" location picker, the same pattern most delivery
  * apps use: the map pans freely underneath a pin that's fixed at the exact
- * screen center, rather than a draggable marker. Search results and "use my
- * location" both just move the camera - the picked point is always
+ * center of the map, rather than a draggable marker. Search results and "use
+ * my location" both just move the map - the picked point is always
  * whatever's under the pin once the map stops moving.
+ *
+ * Layout, top to bottom: the map (with the search box floating over its top
+ * and the my-location button at its bottom corner), then the address panel.
+ * The panel sits below the map, not on top of it, so nothing overlaps.
  */
 @Composable
 fun LocationPickerScreen(
     initialLatLng: GeoPoint,
     moveCameraTo: GeoPoint?,
     pickedAddress: String?,
+    findingAddress: Boolean,
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
     onSearchSubmit: () -> Unit,
-    hasSearched: Boolean,
-    searchFailed: Boolean,
-    searchResults: List<ServerApi.PlaceResult>,
+    placeResults: List<ServerApi.PlaceResult>,
+    searchMessage: String?,
     onResultSelected: (ServerApi.PlaceResult) -> Unit,
     onCameraSettled: (GeoPoint) -> Unit,
     onCameraMoveDone: () -> Unit,
@@ -83,131 +92,82 @@ fun LocationPickerScreen(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize()) {
 
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = {
-                mapView.apply {
-                    controller.setZoom(DEFAULT_ZOOM)
-                    controller.setCenter(initialLatLng)
-                    // Fires once panning/zooming has stopped for 400 ms: that
-                    // point under the pin is the picked location.
-                    addMapListener(DelayedMapListener(object : MapListener {
-                        override fun onScroll(event: ScrollEvent?): Boolean = onStop()
-                        override fun onZoom(event: ZoomEvent?): Boolean = onStop()
-                        private fun onStop(): Boolean {
-                            center = centerPoint()
-                            settled(center)
-                            return true
-                        }
-                    }, 400))
-                    // Address for the starting position straight away.
-                    post { settled(centerPoint()) }
-                }
-            }
-        )
+        // ---- The map, with things floating over it ----
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
 
-        OsmCredit(modifier = Modifier.align(Alignment.BottomStart).padding(bottom = 130.dp))
-
-        // A pin fixed at the exact screen center - the map pans underneath
-        // it. Simpler to get right than a draggable marker, and it's what
-        // Amazon/Swiggy/Uber-style pickers do.
-        Text(
-            text = "📍",
-            fontSize = 40.sp,
-            modifier = Modifier
-                .align(Alignment.Center)
-                .offset(y = (-20).dp)
-        )
-
-        Column(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = onSearchQueryChange,
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Search for a location") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { onSearchSubmit() }),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = MaterialTheme.colorScheme.surface,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surface
-                    )
-                )
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Button(onClick = onSearchSubmit) {
-                    Text("Go")
-                }
-            }
-
-            if (hasSearched) {
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    tonalElevation = 4.dp
-                ) {
-                    Column(modifier = Modifier.padding(8.dp)) {
-                        when {
-                            searchFailed -> Text(
-                                text = "Search isn't available right now. Move the map to your house instead.",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            searchResults.isEmpty() -> Text(
-                                text = "No matches for that search",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            else -> searchResults.forEach { result ->
-                                TextButton(
-                                    onClick = { onResultSelected(result) },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text(
-                                        text = result.name,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        textAlign = TextAlign.Start
-                                    )
-                                }
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = {
+                    mapView.apply {
+                        controller.setZoom(DEFAULT_ZOOM)
+                        controller.setCenter(initialLatLng)
+                        // Fires once panning/zooming has stopped for 400 ms: that
+                        // point under the pin is the picked location.
+                        addMapListener(DelayedMapListener(object : MapListener {
+                            override fun onScroll(event: ScrollEvent?): Boolean = onStop()
+                            override fun onZoom(event: ZoomEvent?): Boolean = onStop()
+                            private fun onStop(): Boolean {
+                                center = centerPoint()
+                                settled(center)
+                                return true
                             }
-                        }
+                        }, 400))
+                        // Address for the starting position straight away.
+                        post { settled(centerPoint()) }
                     }
                 }
+            )
+
+            // The pin, fixed at the center of the map. The icon's tip is near
+            // its bottom edge, so it's moved up until the tip is on the center.
+            Icon(
+                painter = painterResource(R.drawable.ic_pin),
+                contentDescription = "Picked location",
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(48.dp)
+                    .offset(y = (-20).dp)
+            )
+
+            SearchBox(
+                searchQuery = searchQuery,
+                onSearchQueryChange = onSearchQueryChange,
+                onSearchSubmit = onSearchSubmit,
+                placeResults = placeResults,
+                searchMessage = searchMessage,
+                onResultSelected = onResultSelected,
+                modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding()
+            )
+
+            OsmCredit(modifier = Modifier.align(Alignment.BottomStart))
+
+            FloatingActionButton(
+                onClick = onLocateMeClick,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_my_location),
+                    contentDescription = "Use my current location"
+                )
             }
         }
 
-        FloatingActionButton(
-            onClick = onLocateMeClick,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(16.dp)
-                .padding(bottom = 120.dp)
-        ) {
-            Text("🧭")
-        }
-
-        Surface(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth(),
-            tonalElevation = 4.dp
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-
+        // ---- The address panel, below the map ----
+        Surface(modifier = Modifier.fillMaxWidth(), tonalElevation = 4.dp) {
+            Column(modifier = Modifier.navigationBarsPadding().padding(16.dp)) {
+                val addressText = if (findingAddress) {
+                    "Finding the address..."
+                } else {
+                    pickedAddress ?: "No street address found for this spot"
+                }
+                Text(text = addressText, style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    text = pickedAddress ?: String.format(Locale.US, "%.6f, %.6f", center.latitude, center.longitude),
-                    style = MaterialTheme.typography.bodyMedium
+                    text = String.format(Locale.US, "%.6f, %.6f", center.latitude, center.longitude),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -217,6 +177,67 @@ fun LocationPickerScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Confirm this location")
+                }
+            }
+        }
+    }
+}
+
+/** The search box, with suggestions or search results in a list under it. */
+@Composable
+private fun SearchBox(
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+    onSearchSubmit: () -> Unit,
+    placeResults: List<ServerApi.PlaceResult>,
+    searchMessage: String?,
+    onResultSelected: (ServerApi.PlaceResult) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier.fillMaxWidth().padding(16.dp)) {
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange,
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Search for a location") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onSearchSubmit() }),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = MaterialTheme.colorScheme.surface,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                )
+            )
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Button(onClick = onSearchSubmit) {
+                Text("Go")
+            }
+        }
+
+        if (placeResults.isEmpty() && searchMessage == null) return@Column
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Surface(modifier = Modifier.fillMaxWidth(), tonalElevation = 4.dp, shadowElevation = 4.dp) {
+            Column(modifier = Modifier.padding(8.dp)) {
+                if (searchMessage != null) {
+                    Text(text = searchMessage, style = MaterialTheme.typography.bodySmall)
+                }
+                for (result in placeResults) {
+                    TextButton(
+                        onClick = { onResultSelected(result) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = result.name,
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Start
+                        )
+                    }
                 }
             }
         }

@@ -36,7 +36,7 @@ def static_jobs(truck_id, truck):
     """Route requests for this truck's legs that have no road shape yet
     (neither driven by the truck nor fetched already). Each request covers
     up to STATIC_CHUNK stops in a row, from the first leg that's missing."""
-    stops = truck.get("stops", [])
+    stops = truck["stops"]
 
     first_missing = None
     for i in range(len(stops) - 1):
@@ -63,7 +63,7 @@ def static_jobs(truck_id, truck):
 def approach_job(data, truck_id, truck):
     """(truck_id, next_index, points) if this truck's route ahead is due for
     a refresh, else None."""
-    stops = truck.get("stops", [])
+    stops = truck["stops"]
     if not stops or not eta.is_active(truck):
         return None
     last, _ = eta.progress(data, truck_id)

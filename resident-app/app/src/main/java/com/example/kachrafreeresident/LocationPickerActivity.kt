@@ -9,7 +9,9 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
+import android.os.Handler
 import android.os.Looper
+import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -41,15 +43,31 @@ class LocationPickerActivity : ComponentActivity() {
         // when there's no earlier location to open the map on.
         private const val DEFAULT_LATITUDE = 20.5937
         private const val DEFAULT_LONGITUDE = 78.9629
+
+        // Suggestions are asked for once typing pauses this long, not on
+        // every key press.
+        private const val SUGGEST_DELAY_MS = 500L
+        private const val SUGGEST_MIN_LETTERS = 3
     }
 
     private var moveCameraTo by mutableStateOf<GeoPoint?>(null)
     private var pickedAddress by mutableStateOf<String?>(null)
+    private var findingAddress by mutableStateOf(true)
 
     private var searchQuery by mutableStateOf("")
-    private var hasSearched by mutableStateOf(false)
-    private var searchFailed by mutableStateOf(false)
-    private var searchResults by mutableStateOf<List<ServerApi.PlaceResult>>(emptyList())
+    // Suggestions while typing, or the results after pressing Go.
+    private var placeResults by mutableStateOf<List<ServerApi.PlaceResult>>(emptyList())
+    // e.g. "No matches for that search"; null shows nothing.
+    private var searchMessage by mutableStateOf<String?>(null)
+
+    // The map's middle, so suggestions near it come first.
+    private var mapCenter = GeoPoint(DEFAULT_LATITUDE, DEFAULT_LONGITUDE)
+
+    // Counts address lookups, so an old, slow answer can't replace a newer one.
+    private var addressLookupNumber = 0
+
+    private val handler = Handler(Looper.getMainLooper())
+    private val suggestRunnable = Runnable { fetchSuggestions() }
 
     private val locationPermissionLauncher =
         registerForActivityResult(
@@ -100,6 +118,7 @@ class LocationPickerActivity : ComponentActivity() {
             } else {
                 GeoPoint(DEFAULT_LATITUDE, DEFAULT_LONGITUDE)
             }
+        mapCenter = initialLatLng
 
         setContent {
             KachraFreeResidentTheme {
@@ -107,19 +126,22 @@ class LocationPickerActivity : ComponentActivity() {
                     initialLatLng = initialLatLng,
                     moveCameraTo = moveCameraTo,
                     pickedAddress = pickedAddress,
+                    findingAddress = findingAddress,
                     searchQuery = searchQuery,
-                    onSearchQueryChange = { searchQuery = it },
+                    onSearchQueryChange = { text -> onSearchTextChanged(text) },
                     onSearchSubmit = { runSearch() },
-                    hasSearched = hasSearched,
-                    searchFailed = searchFailed,
-                    searchResults = searchResults,
+                    placeResults = placeResults,
+                    searchMessage = searchMessage,
                     onResultSelected = { result ->
+                        handler.removeCallbacks(suggestRunnable)
                         moveCameraTo = result.latLng
-                        hasSearched = false
                         searchQuery = result.name
+                        placeResults = emptyList()
+                        searchMessage = null
+                        hideKeyboard()
                     },
                     onCameraSettled = { latLng ->
-                        pickedAddress = null
+                        mapCenter = latLng
                         reverseGeocode(latLng)
                     },
                     onCameraMoveDone = { moveCameraTo = null },
@@ -130,20 +152,73 @@ class LocationPickerActivity : ComponentActivity() {
         }
     }
 
-    private fun runSearch() {
-        val query = searchQuery
+    override fun onDestroy() {
+        super.onDestroy()
+        handler.removeCallbacks(suggestRunnable)
+    }
 
-        if (query.isBlank()) return
+    private fun onSearchTextChanged(text: String) {
+        searchQuery = text
+        searchMessage = null
+        // Start the wait again on every key press: suggestions are only asked
+        // for once typing pauses.
+        handler.removeCallbacks(suggestRunnable)
+        if (text.trim().length < SUGGEST_MIN_LETTERS) {
+            placeResults = emptyList()
+        } else {
+            handler.postDelayed(suggestRunnable, SUGGEST_DELAY_MS)
+        }
+    }
+
+    private fun fetchSuggestions() {
+        val query = searchQuery.trim()
+        val near = mapCenter
+
+        Thread {
+            val results = ServerApi.suggestPlaces(query, near.latitude, near.longitude)
+
+            runOnUiThread {
+                // The resident may have kept typing while we waited: only
+                // show suggestions for what's in the box now. A failure just
+                // shows no suggestions; pressing Go explains what's wrong.
+                if (results != null && searchQuery.trim() == query) {
+                    placeResults = results
+                }
+            }
+        }.start()
+    }
+
+    private fun runSearch() {
+        val query = searchQuery.trim()
+        if (query.isEmpty()) return
+        handler.removeCallbacks(suggestRunnable)
+        hideKeyboard()
 
         Thread {
             val results = ServerApi.searchPlaces(query)
+            // On failure, find out whether it's our server or the search service.
+            var message: String? = null
+            if (results == null) {
+                message = if (ServerApi.ping()) {
+                    "Location search isn't answering right now. Move the map to your house instead."
+                } else {
+                    "Can't reach the Kachra Free server, so search isn't available. Move the map to your house instead."
+                }
+            } else if (results.isEmpty()) {
+                message = "No matches for that search"
+            }
 
             runOnUiThread {
-                hasSearched = true
-                searchFailed = results == null
-                searchResults = results.orEmpty()
+                placeResults = results ?: emptyList()
+                searchMessage = message
             }
         }.start()
+    }
+
+    private fun hideKeyboard() {
+        val view = currentFocus ?: return
+        getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(view.windowToken, 0)
+        view.clearFocus()
     }
 
     private fun requestCurrentLocation() {
@@ -218,6 +293,11 @@ class LocationPickerActivity : ComponentActivity() {
     }
 
     private fun reverseGeocode(latLng: GeoPoint) {
+        addressLookupNumber += 1
+        val thisLookup = addressLookupNumber
+        findingAddress = true
+        pickedAddress = null
+
         Thread {
             val address = try {
                 val geocoder = Geocoder(this, Locale.getDefault())
@@ -229,7 +309,11 @@ class LocationPickerActivity : ComponentActivity() {
             }
 
             runOnUiThread {
-                pickedAddress = address
+                // Ignore it if the map has moved on since.
+                if (thisLookup == addressLookupNumber) {
+                    pickedAddress = address
+                    findingAddress = false
+                }
             }
         }.start()
     }

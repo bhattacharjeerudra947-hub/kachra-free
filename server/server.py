@@ -37,19 +37,14 @@ last_search_error_at = 0
 
 
 def load_admin_password():
-    """ADMIN_PASSWORD env var if set, otherwise a random password generated
-    once and kept in data/admin_password.txt (gitignored)."""
-    if os.environ.get("ADMIN_PASSWORD"):
-        return os.environ["ADMIN_PASSWORD"]
-    try:
-        with open(PASSWORD_FILE, encoding="utf-8") as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        password = secrets.token_urlsafe(9)
+    """A random password generated on the first run and kept in
+    data/admin_password.txt (gitignored). Edit that file to change it."""
+    if not os.path.exists(PASSWORD_FILE):
         os.makedirs(db.DATA_DIR, exist_ok=True)
         with open(PASSWORD_FILE, "w", encoding="utf-8") as f:
-            f.write(password)
-        return password
+            f.write(secrets.token_urlsafe(9))
+    with open(PASSWORD_FILE, encoding="utf-8") as f:
+        return f.read().strip()
 
 
 ADMIN_PASSWORD = load_admin_password()
@@ -59,13 +54,17 @@ def is_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def normalize_phone(value):
-    """"+91 98765-43210" and "+919876543210" are the same resident."""
-    phone = ""
-    for ch in str(value or ""):
-        if ch.isdigit() or ch == "+":
-            phone += ch
-    return phone
+def clean_username(value):
+    """A resident's username, as typed in the app. Upper/lower case and
+    surrounding spaces don't matter: "Asha" and " asha " are the same
+    resident. Allowed: 3 to 30 letters, digits, ".", "_" or "-"."""
+    username = str(value or "").strip().lower()
+    if len(username) < 3 or len(username) > 30:
+        raise BadRequest("username must be 3 to 30 characters")
+    for ch in username:
+        if not (ch.isalnum() or ch in "._-"):
+            raise BadRequest("username can only have letters, numbers, '.', '_' and '-'")
+    return username
 
 
 def new_id():
@@ -74,7 +73,7 @@ def new_id():
 
 def stops_for_driver(truck):
     stops = []
-    for stop in truck.get("stops", []):
+    for stop in truck["stops"]:
         stops.append({"name": stop["name"], "latitude": stop["lat"], "longitude": stop["lng"]})
     return stops
 
@@ -88,6 +87,20 @@ def get_truck(truck_id):
 
 
 # ------------------------------------------------------ driver-app API --
+#
+# Trucks are added in the admin panel. The driver app only works with a
+# Truck ID the server already knows (404 otherwise).
+
+def truck_info(request):
+    """The driver app checks its Truck ID with this before it starts
+    tracking. 404 if there's no such truck."""
+    truck_id = (request.query.get("truckId") or "").strip()
+    with db.lock:
+        truck = db.data["trucks"].get(truck_id)
+        if truck is None:
+            return 404, {"error": "unknown truck"}
+        return 200, {"ok": True, "stops": stops_for_driver(truck)}
+
 
 def truck_location(request):
     body = request.json_body()
@@ -98,11 +111,9 @@ def truck_location(request):
         raise BadRequest("truckId, latitude and longitude are required")
 
     with db.lock:
-        # Unknown IDs are added automatically, so a new driver just types an
-        # ID and starts. The truck then shows up in the admin panel.
-        if truck_id not in db.data["trucks"]:
-            db.data["trucks"][truck_id] = {"stops": []}
-        truck = db.data["trucks"][truck_id]
+        truck = db.data["trucks"].get(truck_id)
+        if truck is None:
+            return 404, {"error": "unknown truck"}
         now = time.time()
         truck["lat"] = lat
         truck["lng"] = lng
@@ -128,9 +139,9 @@ def truck_add_stop(request):
         raise BadRequest("truckId, latitude and longitude are required")
 
     with db.lock:
-        if truck_id not in db.data["trucks"]:
-            db.data["trucks"][truck_id] = {"stops": []}
-        truck = db.data["trucks"][truck_id]
+        truck = db.data["trucks"].get(truck_id)
+        if truck is None:
+            return 404, {"error": "unknown truck"}
         stops = truck["stops"]
         stops.append({
             "id": new_id(),
@@ -146,33 +157,37 @@ def truck_add_stop(request):
 # ---------------------------------------------------- resident-app API --
 
 def save_resident(body, from_admin):
-    """Used by both the app and the admin panel. Both create the same kind of
-    resident record (AGENTS.md section 13)."""
-    phone = normalize_phone(body.get("phoneNumber"))
+    """Used by the app (register, or register again) and the admin panel
+    (edit only: residents register themselves in the app).
+
+    Residents are stored by username, so there's never a duplicate: the same
+    username registering again - on the same phone or a new one - is the
+    same resident, and their record is updated. Returns the username, or
+    None if the truck doesn't exist."""
+    username = clean_username(body.get("username"))
     truck_id = str(body.get("truckId") or "").strip()
     lat = body.get("latitude")
     lng = body.get("longitude")
     alert_minutes = body.get("alertMinutes")
-    if not phone or not truck_id or not is_number(lat) or not is_number(lng) or not is_number(alert_minutes):
-        raise BadRequest("phoneNumber, truckId, latitude, longitude and alertMinutes are required")
+    if not truck_id or not is_number(lat) or not is_number(lng) or not is_number(alert_minutes):
+        raise BadRequest("username, truckId, latitude, longitude and alertMinutes are required")
 
     with db.lock:
         if truck_id not in db.data["trucks"]:
             return None
-        if phone not in db.data["residents"]:
-            # "source" records who registered them first: the app or the admin.
-            db.data["residents"][phone] = {"source": "admin" if from_admin else "app"}
-        resident = db.data["residents"][phone]
+        if username not in db.data["residents"]:
+            if from_admin:
+                raise BadRequest("no such resident: the admin panel can only edit residents")
+            db.data["residents"][username] = {}
+        resident = db.data["residents"][username]
         resident["truckId"] = truck_id
         resident["lat"] = lat
         resident["lng"] = lng
         resident["alertMinutes"] = alert_minutes
         resident["address"] = body.get("address") or None
         resident["updatedAt"] = time.time()
-        if from_admin:
-            resident["name"] = str(body.get("name") or "").strip()
         db.save()
-    return phone
+    return username
 
 
 def resident_register(request):
@@ -182,16 +197,14 @@ def resident_register(request):
 
 
 def resident_status(request):
-    phone = normalize_phone(request.query.get("phone"))
-    if not phone:
-        raise BadRequest("phone is required")
+    username = clean_username(request.query.get("username"))
 
     with db.lock:
-        resident = db.data["residents"].get(phone)
+        resident = db.data["residents"].get(username)
         if not resident:
             return 404, {"error": "resident not found"}
         status = eta.resident_status(db.data, resident)
-        alert_id = f"{phone}|{status['runId']}"
+        alert_id = f"{username}|{status['runId']}"
         alert = db.data["alerts"].get(alert_id)
 
     if alert:
@@ -206,14 +219,41 @@ def places_search(request):
     query = (request.query.get("query") or "").strip()
     if not query:
         return 200, {"results": []}
-    with db.lock:
-        country_codes = db.data["settings"]["searchCountryCodes"]
     try:
-        return 200, {"results": osm.search(query, country_codes)}
+        return 200, {"results": osm.search(query)}
     except Exception as error:
-        last_search_error = str(error)
+        last_search_error = f"Location search (Nominatim) failed: {error}"
         last_search_error_at = time.time()
         return 502, {"error": f"location search failed: {error}"}
+
+
+def places_suggest(request):
+    """Search suggestions while the resident is typing (osm.suggest)."""
+    global last_search_error, last_search_error_at
+    query = (request.query.get("query") or "").strip()
+    if len(query) < 3:
+        return 200, {"results": []}  # too short to suggest anything useful
+
+    # The middle of the resident's map, so nearby places come first.
+    lat = None
+    lng = None
+    try:
+        lat = float(request.query["lat"])
+        lng = float(request.query["lng"])
+    except (KeyError, ValueError):
+        pass  # not sent: no nearby preference
+
+    try:
+        return 200, {"results": osm.suggest(query, lat, lng)}
+    except Exception as error:
+        last_search_error = f"Search suggestions (Photon) failed: {error}"
+        last_search_error_at = time.time()
+        return 502, {"error": f"search suggestions failed: {error}"}
+
+
+def ping(request):
+    """Lets the apps check that the server is reachable."""
+    return 200, {"ok": True}
 
 
 def system_alerts(trucks):
@@ -226,7 +266,7 @@ def system_alerts(trucks):
     seconds_ago = time.time() - last_search_error_at
     if last_search_error and seconds_ago < 3600:
         minutes = round(seconds_ago / 60)
-        found.append(f"Location search (Nominatim) failed {minutes} min ago: {last_search_error}")
+        found.append(f"{last_search_error} ({minutes} min ago)")
     return found
 
 
@@ -247,7 +287,7 @@ def admin_state(request):
             for run in data["runs"].values():
                 if run["truckId"] != truck_id or run["date"] == eta.today():
                     continue
-                if run.get("synthetic"):
+                if run["synthetic"]:
                     demo_runs += 1
                 else:
                     past_runs += 1
@@ -262,11 +302,11 @@ def admin_state(request):
                 route_age_seconds = now - approach["computedAt"]
 
             stops = []
-            for i, stop in enumerate(truck.get("stops", [])):
+            for i, stop in enumerate(truck["stops"]):
                 shape, source = eta.leg_shape(truck, i)
                 stops.append({
                     "id": stop["id"], "name": stop["name"], "lat": stop["lat"], "lng": stop["lng"],
-                    "addedBy": stop.get("addedBy", "admin"),
+                    "addedBy": stop["addedBy"],
                     "usualTime": eta.usual_time(data, truck_id, stop["id"]),
                     "typicalDwellSeconds": round(eta.typical_dwell(data, truck_id, stop["id"])),
                     # Road to the next stop: as driven, the OSRM route, or none yet.
@@ -288,17 +328,15 @@ def admin_state(request):
             })
 
         residents = []
-        for phone, resident in sorted(data["residents"].items()):
+        for username, resident in sorted(data["residents"].items()):
             status = eta.resident_status(data, resident)
             residents.append({
-                "phoneNumber": phone,
-                "name": resident.get("name", ""),
-                "truckId": resident.get("truckId"),
+                "username": username,
+                "truckId": resident["truckId"],
                 "lat": resident["lat"],
                 "lng": resident["lng"],
-                "address": resident.get("address"),
+                "address": resident["address"],
                 "alertMinutes": resident["alertMinutes"],
-                "source": resident.get("source", "app"),
                 "stopName": status["stopName"],
                 "stopDistanceMeters": status["stopDistanceMeters"],
                 "status": status["status"],
@@ -342,7 +380,7 @@ def admin_save_stops(request):
 
         # The truck's current stops, by id.
         existing = {}
-        for stop in truck.get("stops", []):
+        for stop in truck["stops"]:
             existing[stop["id"]] = stop
 
         new_stops = []
@@ -392,15 +430,15 @@ def admin_track(request):
 
 
 def admin_save_resident(request):
-    phone = save_resident(request.json_body(), from_admin=True)
-    if phone is None:
+    username = save_resident(request.json_body(), from_admin=True)
+    if username is None:
         raise BadRequest("unknown truck")
-    return 200, {"phoneNumber": phone}
+    return 200, {"username": username}
 
 
 def admin_delete_resident(request):
     with db.lock:
-        db.data["residents"].pop(normalize_phone(request.query.get("phone")), None)
+        db.data["residents"].pop(clean_username(request.query.get("username")), None)
         db.save()
     return 200, {"ok": True}
 
@@ -414,18 +452,19 @@ def admin_save_settings(request):
                 if not is_number(body[key]) or body[key] <= 0:
                     raise BadRequest(f"{key} must be a positive number")
                 settings[key] = body[key]
-        if "searchCountryCodes" in body:
-            settings["searchCountryCodes"] = str(body["searchCountryCodes"]).strip()
         db.save()
     return 200, {"ok": True}
 
 
 ROUTES = {
     ("POST", "/api/trucks/location"): truck_location,
+    ("GET", "/api/trucks"): truck_info,
     ("POST", "/api/trucks/stops"): truck_add_stop,
     ("POST", "/api/residents/register"): resident_register,
     ("GET", "/api/residents/status"): resident_status,
     ("GET", "/api/places/search"): places_search,
+    ("GET", "/api/places/suggest"): places_suggest,
+    ("GET", "/api/ping"): ping,
     ("GET", "/api/admin/state"): admin_state,
     ("POST", "/api/admin/trucks"): admin_add_truck,
     ("DELETE", "/api/admin/trucks"): admin_delete_truck,
@@ -459,7 +498,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urllib.parse.urlparse(self.path)
         path = url.path.rstrip("/") or "/"
 
-        # "?phone=123&x=1" -> {"phone": "123", "x": "1"}. parse_qs gives a
+        # "?username=asha&x=1" -> {"username": "asha", "x": "1"}. parse_qs gives a
         # list per name (a name can repeat); we only ever need the first.
         self.query = {}
         for name, values in urllib.parse.parse_qs(url.query).items():

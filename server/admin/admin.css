@@ -54,6 +54,15 @@ table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eaeef2; vertical-align: top; }
 th { font-weight: 600; font-size: 12px; color: #656d76; }
 
+/* "● Online" / "● Offline" pills in the Trucks table. */
+.online-pill {
+  display: inline-block; padding: 1px 8px; border-radius: 10px;
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+}
+.online-pill.on { background: #d3f9d8; color: #1a7f37; }
+.online-pill.off { background: #e9ecef; color: #656d76; }
+#trucks-summary { font-weight: normal; margin-left: 8px; }
+
 .ok { color: #1a7f37; font-weight: 600; }
 .bad { color: #cf222e; font-weight: 600; }
 
@@ -93,8 +102,26 @@ label.inline { flex-direction: row; align-items: center; gap: 6px; font-size: 13
   border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
   color: #fff; font: 600 11px/18px system-ui, sans-serif; text-align: center;
 }
-.pin.stop { background: #1c7ed6; }
-.pin.stop.selected { background: #d9480f; }
-.pin.truck { background: #f76707; height: 26px; line-height: 22px; border-radius: 6px; }
-.pin.truck.offline { background: #868e96; }
-.pin.resident { background: #2f9e44; min-width: 12px; height: 12px; padding: 0; border-radius: 6px; }
+/* Stops: a numbered circle in their truck's colour (set inline). */
+.pin.stop.selected { outline: 3px solid rgba(0, 0, 0, 0.35); }
+.pin.resident { background: #343a40; min-width: 12px; height: 12px; padding: 0; border-radius: 6px; }
+
+/* Trucks: a truck icon in the truck's colour, with its ID underneath. */
+.truck-marker {
+  transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center;
+  width: max-content;
+}
+.truck-marker .icon {
+  width: 34px; height: 34px; border-radius: 17px;
+  border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  display: flex; align-items: center; justify-content: center;
+}
+.truck-marker svg { width: 20px; height: 20px; fill: #fff; }
+.truck-marker .label {
+  margin-top: 2px; padding: 0 5px; border-radius: 4px;
+  background: rgba(255, 255, 255, 0.9); color: #1f2328;
+  font: 600 11px/16px system-ui, sans-serif;
+}
+.truck-marker.offline .icon { background: #868e96 !important; }
+.truck-marker.offline { opacity: 0.8; }

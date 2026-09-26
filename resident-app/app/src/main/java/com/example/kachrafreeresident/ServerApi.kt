@@ -20,19 +20,31 @@ object ServerApi {
 
     data class Alert(val id: String, val message: String)
 
+    data class Stop(val name: String, val position: GeoPoint)
+
     data class TruckStatus(
-        // true when the server doesn't know this phone number (yet).
+        // true when the server doesn't know this username (yet).
         val notRegistered: Boolean = false,
+        // "on_the_way", "at_stop", "collected", "truck_offline", "no_stops" or
+        // "unknown_truck" (docs/EXPLAINER.md section 8.8).
+        val status: String? = null,
         // Human-readable summary from the server, e.g. "Truck is about 8 min away".
         val message: String? = null,
-        val truckLatitude: Double? = null,
-        val truckLongitude: Double? = null,
-        // The truck's stop nearest the house, where the resident brings their garbage.
+        val truckPosition: GeoPoint? = null,
+        // All of the truck's stops in collection order, and which one is
+        // this resident's collection point (the one nearest the house).
+        val stops: List<Stop> = emptyList(),
+        val stopIndex: Int? = null,
         val stopName: String? = null,
-        val stopLatitude: Double? = null,
-        val stopLongitude: Double? = null,
+        val stopDistanceMeters: Int? = null,
         val etaMinutes: Int? = null,
-        // Road the truck is expected to take: its remaining stops, in collection order.
+        // true when the route server was down and the ETA is a rough guess.
+        val etaIsRough: Boolean = false,
+        // How many stops the truck still visits before this resident's.
+        val stopsAway: Int? = null,
+        // Usual arrival time at their stop, e.g. "07:40", from history.
+        val usualTime: String? = null,
+        // Road the truck is expected to take to their stop.
         val path: List<GeoPoint> = emptyList(),
         val alert: Alert? = null
     )
@@ -42,7 +54,7 @@ object ServerApi {
     enum class RegisterResult { OK, UNKNOWN_TRUCK, UNREACHABLE }
 
     fun register(
-        phoneNumber: String,
+        username: String,
         truckId: String,
         latitude: Double,
         longitude: Double,
@@ -50,7 +62,7 @@ object ServerApi {
         address: String?
     ): RegisterResult {
         val body = JSONObject()
-            .put("phoneNumber", phoneNumber)
+            .put("username", username)
             .put("truckId", truckId)
             .put("latitude", latitude)
             .put("longitude", longitude)
@@ -66,35 +78,58 @@ object ServerApi {
     }
 
     /** null means the server couldn't be reached. */
-    fun fetchStatus(phoneNumber: String): TruckStatus? {
-        val response = request("GET", "/api/residents/status?phone=${encode(phoneNumber)}")
+    fun fetchStatus(username: String): TruckStatus? {
+        val response = request("GET", "/api/residents/status?username=${encode(username)}")
         if (response.code == 404) return TruckStatus(notRegistered = true)
         val json = response.json
         if (response.code !in 200..299 || json == null) return null
-
-        var etaMinutes: Int? = null
-        if (!json.isNull("etaMinutes")) etaMinutes = json.optInt("etaMinutes")
 
         var alert: Alert? = null
         val alertJson = json.optJSONObject("alert")
         if (alertJson != null) alert = Alert(alertJson.getString("id"), alertJson.getString("message"))
 
+        var truckPosition: GeoPoint? = null
+        if (!json.isNull("truckLatitude") && !json.isNull("truckLongitude")) {
+            truckPosition = GeoPoint(json.getDouble("truckLatitude"), json.getDouble("truckLongitude"))
+        }
+
         return TruckStatus(
+            status = stringOrNull(json, "status"),
             message = stringOrNull(json, "message"),
-            truckLatitude = doubleOrNull(json, "truckLatitude"),
-            truckLongitude = doubleOrNull(json, "truckLongitude"),
+            truckPosition = truckPosition,
+            stops = parseStops(json.optJSONArray("stops")),
+            stopIndex = intOrNull(json, "stopIndex"),
             stopName = stringOrNull(json, "stopName"),
-            stopLatitude = doubleOrNull(json, "stopLatitude"),
-            stopLongitude = doubleOrNull(json, "stopLongitude"),
-            etaMinutes = etaMinutes,
+            stopDistanceMeters = intOrNull(json, "stopDistanceMeters"),
+            etaMinutes = intOrNull(json, "etaMinutes"),
+            etaIsRough = json.optBoolean("etaIsRough", false),
+            stopsAway = intOrNull(json, "stopsAway"),
+            usualTime = stringOrNull(json, "usualTime"),
             path = parsePath(json.optJSONArray("path")),
             alert = alert
         )
     }
 
+    /** true if the server answered at all. */
+    fun ping(): Boolean {
+        return request("GET", "/api/ping").code in 200..299
+    }
+
     /** null means search isn't available right now (server down or not set up). */
     fun searchPlaces(query: String): List<PlaceResult>? {
-        val response = request("GET", "/api/places/search?query=${encode(query)}")
+        return parsePlaces(request("GET", "/api/places/search?query=${encode(query)}"))
+    }
+
+    /**
+     * Suggestions for a half-typed search, places near (latitude, longitude)
+     * first. null means suggestions aren't available right now.
+     */
+    fun suggestPlaces(query: String, latitude: Double, longitude: Double): List<PlaceResult>? {
+        val path = "/api/places/suggest?query=${encode(query)}&lat=$latitude&lng=$longitude"
+        return parsePlaces(request("GET", path))
+    }
+
+    private fun parsePlaces(response: Response): List<PlaceResult>? {
         val results = response.json?.optJSONArray("results")
         if (response.code !in 200..299 || results == null) return null
 
@@ -115,7 +150,7 @@ object ServerApi {
             val connection = URL(ServerConfig.BASE_URL + path).openConnection() as HttpURLConnection
             connection.requestMethod = method
             connection.connectTimeout = 5_000
-            connection.readTimeout = 15_000
+            connection.readTimeout = 20_000
             // ngrok's free tier otherwise answers with an HTML warning page.
             connection.setRequestProperty("ngrok-skip-browser-warning", "true")
 
@@ -160,14 +195,25 @@ object ServerApi {
         return points
     }
 
-    // org.json returns the string "null" / NaN for JSON nulls, so check first.
+    private fun parseStops(array: JSONArray?): List<Stop> {
+        val stops = mutableListOf<Stop>()
+        if (array == null) return stops
+        for (i in 0 until array.length()) {
+            val stop = array.getJSONObject(i)
+            val position = GeoPoint(stop.getDouble("latitude"), stop.getDouble("longitude"))
+            stops.add(Stop(stop.getString("name"), position))
+        }
+        return stops
+    }
+
+    // org.json returns the string "null" / NaN / 0 for JSON nulls, so check first.
+    private fun intOrNull(json: JSONObject, key: String): Int? {
+        if (json.isNull(key)) return null
+        return json.optInt(key)
+    }
+
     private fun stringOrNull(json: JSONObject, key: String): String? {
         if (json.isNull(key)) return null
         return json.optString(key)
-    }
-
-    private fun doubleOrNull(json: JSONObject, key: String): Double? {
-        if (json.isNull(key)) return null
-        return json.optDouble(key)
     }
 }

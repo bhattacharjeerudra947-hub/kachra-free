@@ -2,11 +2,15 @@
 
 - route():  OSRM. Driving route through points along real roads, split into
             legs, each with its normal drive time (no live traffic).
-- search(): Nominatim. Place/address search for the resident app's picker.
+- search(): Nominatim. Place/address search for the resident app's picker
+            (when the resident presses Go).
+- suggest(): Photon. Suggestions while the resident is still typing, e.g.
+            "india ga" -> India Gate. Nominatim's rules forbid
+            search-as-you-type; Photon is the OpenStreetMap search made for it.
 
-Both public servers ask for fair use: an honest User-Agent and at most about
-one request per second. _get_json() spaces requests out to respect that. A
-real deployment should run its own copies (docs/TODO_FOR_YOU.md).
+All three public servers ask for fair use: an honest User-Agent and at most
+about one request per second. _get_json() spaces requests out to respect
+that. A real deployment should run its own copies (docs/TODO_FOR_YOU.md).
 """
 
 import json
@@ -17,11 +21,13 @@ import urllib.request
 
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving/"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+PHOTON_URL = "https://photon.komoot.io/api/"
 USER_AGENT = "KachraFree/1.0 (student prototype)"
 
 _turn = threading.Lock()
 _last_request_at = 0.0
 _search_cache = {}
+_suggest_cache = {}
 
 
 def _get_json(url):
@@ -62,14 +68,12 @@ def route(points):
     return legs
 
 
-def search(query, country_codes=""):
+def search(query):
     """Returns up to 5 [{"name", "latitude", "longitude"}]. Results are cached,
     since the same few searches repeat and the server asks us to go easy."""
-    key = (query.lower(), country_codes)
+    key = query.lower()
     if key not in _search_cache:
         params = {"format": "jsonv2", "limit": 5, "q": query}
-        if country_codes:
-            params["countrycodes"] = country_codes.lower()
         found = _get_json(f"{NOMINATIM_URL}?{urllib.parse.urlencode(params)}")
 
         results = []
@@ -84,3 +88,45 @@ def search(query, country_codes=""):
             _search_cache.clear()  # keep memory use small
         _search_cache[key] = results
     return _search_cache[key]
+
+
+def photon_name(properties):
+    """A readable one-line name from a Photon result's parts, e.g.
+    "India Gate, Shahjahan Road, New Delhi, Delhi, India"."""
+    street = properties.get("street", "")
+    if street and properties.get("housenumber"):
+        street = properties["housenumber"] + " " + street
+
+    parts = []
+    for part in (properties.get("name"), street, properties.get("district"),
+                 properties.get("city"), properties.get("state"), properties.get("country")):
+        if part and part not in parts:  # skip empty and repeated parts
+            parts.append(part)
+    return ", ".join(parts)
+
+
+def suggest(query, lat=None, lng=None):
+    """Up to 5 [{"name", "latitude", "longitude"}] for a half-typed query.
+    Places near (lat, lng), the middle of the resident's map, come first."""
+    # Round the position (about 10 km) so small map moves reuse the cache.
+    if lat is not None and lng is not None:
+        lat = round(lat, 1)
+        lng = round(lng, 1)
+    key = (query.lower(), lat, lng)
+
+    if key not in _suggest_cache:
+        params = {"q": query, "limit": 5}
+        if lat is not None and lng is not None:
+            params["lat"] = lat
+            params["lon"] = lng
+        found = _get_json(f"{PHOTON_URL}?{urllib.parse.urlencode(params)}")
+
+        results = []
+        for feature in found["features"]:
+            lng_found, lat_found = feature["geometry"]["coordinates"]  # GeoJSON order is lng, lat
+            results.append({"name": photon_name(feature["properties"]), "latitude": lat_found, "longitude": lng_found})
+
+        if len(_suggest_cache) > 500:
+            _suggest_cache.clear()
+        _suggest_cache[key] = results
+    return _suggest_cache[key]

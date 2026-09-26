@@ -19,6 +19,8 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 DB_FILE = os.path.join(DATA_DIR, "db.json")
 TRACKS_DIR = os.path.join(DATA_DIR, "tracks")
 
+# Settings for a new database. After that they live in db.json and are
+# changed from the admin panel.
 DEFAULT_SETTINGS = {
     # A truck within this distance of a stop is "at" that stop.
     "stopRadiusMeters": 50,
@@ -29,34 +31,23 @@ DEFAULT_SETTINGS = {
     "routeRefreshMinutes": 2,
     # Average car speed for the rough ETA used when the route server is unreachable.
     "fallbackSpeedKmh": 20,
-    # Optional country code (e.g. "in") to narrow location search.
-    "searchCountryCodes": "",
 }
 
 lock = threading.RLock()
 
 
 def _load():
-    data = {
-        "trucks": {},
-        "residents": {},
-        "runs": {},
-        "alerts": {},
-        "settings": {},
-    }
-    try:
-        with open(DB_FILE, encoding="utf-8") as f:
-            data.update(json.load(f))
-    except FileNotFoundError:
-        pass
-    # A corrupt file raises here on purpose, rather than silently starting
-    # empty and overwriting it on the next save.
-
-    # Start from the defaults, then apply whatever the admin has changed.
-    settings = dict(DEFAULT_SETTINGS)
-    settings.update(data["settings"])
-    data["settings"] = settings
-    return data
+    if not os.path.exists(DB_FILE):
+        # First run: an empty database.
+        return {
+            "trucks": {},
+            "residents": {},
+            "runs": {},
+            "alerts": {},
+            "settings": dict(DEFAULT_SETTINGS),
+        }
+    with open(DB_FILE, encoding="utf-8") as f:
+        return json.load(f)
 
 
 data = _load()

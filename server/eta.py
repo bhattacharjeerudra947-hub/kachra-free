@@ -58,7 +58,7 @@ def run_id(truck_id, date=None):
 
 
 def is_active(truck):
-    return "lat" in truck and time.time() - truck.get("lastSeen", 0) <= ACTIVE_SECONDS
+    return "lat" in truck and time.time() - truck["lastSeen"] <= ACTIVE_SECONDS
 
 
 # ---------------------------------------------------------- recording --
@@ -68,7 +68,7 @@ def record_position(data, truck_id):
     track). Marks arrival at any stop the truck is at, and keeps pushing that
     stop's "left" time forward while it stays."""
     truck = data["trucks"][truck_id]
-    stops = truck.get("stops", [])
+    stops = truck["stops"]
 
     # Today's run for this truck, created on the first update of the day.
     key = run_id(truck_id)
@@ -123,7 +123,7 @@ def progress(data, truck_id):
     """(furthest stop index visited today or -1, index of the stop the truck
     is standing at right now or None)."""
     truck = data["trucks"][truck_id]
-    stops = truck.get("stops", [])
+    stops = truck["stops"]
     run = data["runs"].get(run_id(truck_id))
     visits = {}
     if run:
@@ -188,7 +188,7 @@ def generate_demo_history(data, truck_id, days=14):
     exists. Each stop gets its own typical time; each day varies around it.
     Marked synthetic, so clear_demo_history() can remove it later."""
     truck = data["trucks"][truck_id]
-    stops = truck.get("stops", [])
+    stops = truck["stops"]
 
     # Each stop's own typical collecting time: 1 to 5 minutes.
     base_dwell = {}
@@ -224,7 +224,7 @@ def generate_demo_history(data, truck_id, days=14):
 def clear_demo_history(data, truck_id):
     demo_keys = []
     for key, run in data["runs"].items():
-        if run["truckId"] == truck_id and run.get("synthetic"):
+        if run["truckId"] == truck_id and run["synthetic"]:
             demo_keys.append(key)
     # Deleted after the loop: a dict can't change size while looping over it.
     for key in demo_keys:
@@ -260,10 +260,10 @@ def leg_shape(truck, i):
     """(points, source) of the road from stop i to i+1: "driven" (the roads
     the truck really took), else "osrm", else (None, None)."""
     driven = _stored_leg(truck, i, "driven")
-    if driven and driven.get("points"):
+    if driven and driven["points"]:
         return driven["points"], "driven"
     leg = _stored_leg(truck, i, "leg")
-    if leg and leg.get("points"):
+    if leg and leg["points"]:
         return leg["points"], "osrm"
     return None, None
 
@@ -405,7 +405,7 @@ def nearest_stop(truck, lat, lng):
     """(index, metres) of the truck's stop closest to a house, or (None, None)."""
     best = None
     best_distance = None
-    for i, stop in enumerate(truck.get("stops", [])):
+    for i, stop in enumerate(truck["stops"]):
         d = distance_m(lat, lng, stop["lat"], stop["lng"])
         if best is None or d < best_distance:
             best = i
@@ -413,18 +413,42 @@ def nearest_stop(truck, lat, lng):
     return best, best_distance
 
 
+def planned_route(truck, target_index):
+    """The road from the truck's first stop to stop target_index, in
+    collection order: the whole round up to the resident's stop. [] unless
+    every leg has a real road shape (no straight lines)."""
+    points = []
+    for i in range(target_index):
+        shape, _ = leg_shape(truck, i)
+        if not shape:
+            return []
+        points += shape
+    return points
+
+
+def to_path_json(points):
+    """[[lat, lng], ...] -> [{"latitude": .., "longitude": ..}, ...] for the app."""
+    path = []
+    for lat, lng in points:
+        path.append({"latitude": lat, "longitude": lng})
+    return path
+
+
 def resident_status(data, resident):
     """Everything a resident needs to know right now. The shape matches
     GET /api/residents/status (docs/EXPLAINER.md)."""
     result = {
         "status": None, "message": None,
-        "truckId": resident.get("truckId"), "truckLatitude": None, "truckLongitude": None,
+        "truckId": resident["truckId"], "truckLatitude": None, "truckLongitude": None,
         "stopName": None, "stopLatitude": None, "stopLongitude": None, "stopDistanceMeters": None,
         "etaMinutes": None, "etaIsRough": None, "stopsAway": None, "usualTime": None,
         "path": [], "runId": None,
+        # All of the truck's stops, in collection order, for the map; and
+        # which one of them is this resident's.
+        "stops": [], "stopIndex": None,
     }
 
-    truck_id = resident.get("truckId")
+    truck_id = resident["truckId"]
     truck = data["trucks"].get(truck_id)
     if truck is None:
         result.update(status="unknown_truck", message=f"No truck with ID {truck_id} is registered.")
@@ -436,12 +460,16 @@ def resident_status(data, resident):
         return result
 
     stop = truck["stops"][index]
+    all_stops = []
+    for s in truck["stops"]:
+        all_stops.append({"name": s["name"], "latitude": s["lat"], "longitude": s["lng"]})
     result.update(
         stopName=stop["name"], stopLatitude=stop["lat"], stopLongitude=stop["lng"],
         stopDistanceMeters=round(metres),
         usualTime=usual_time(data, truck_id, stop["id"]),
         runId=run_id(truck_id),
         truckLatitude=truck.get("lat"), truckLongitude=truck.get("lng"),
+        stops=all_stops, stopIndex=index,
     )
     where = f" Your collection point: {stop['name']}, {round(metres)} m from your house."
     usually = ""
@@ -449,8 +477,10 @@ def resident_status(data, resident):
         usually = f" Usually there around {result['usualTime']}."
 
     if not is_active(truck):
+        # Not driving right now: show the round's usual road up to their stop.
         result.update(status="truck_offline",
-                      message="The truck isn't sending its location right now." + usually + where)
+                      message="The truck isn't sending its location right now." + usually + where,
+                      path=to_path_json(planned_route(truck, index)))
         return result
 
     last, at = progress(data, truck_id)
@@ -484,16 +514,12 @@ def resident_status(data, resident):
     if is_rough:
         rough = " Rough estimate: the route server isn't reachable right now."
 
-    path = []
-    for lat, lng in points:
-        path.append({"latitude": lat, "longitude": lng})
-
     result.update(
         status="on_the_way",
         message=f"Truck is about {eta} min away ({before}).{rough}{where}",
         etaMinutes=eta,
         etaIsRough=is_rough,
         stopsAway=stops_away,
-        path=path,
+        path=to_path_json(points),
     )
     return result
