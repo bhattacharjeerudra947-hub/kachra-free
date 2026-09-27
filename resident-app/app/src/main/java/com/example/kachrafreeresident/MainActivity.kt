@@ -1,310 +1,286 @@
 package com.example.kachrafreeresident
 
 import android.Manifest
+import android.app.Activity
+import android.content.Intent
 import android.content.SharedPreferences
-import android.content.pm.PackageManager
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.example.kachrafreeresident.theme.KachraFreeResidentTheme
+import com.example.kachrafreeresident.ui.main.HomeScreen
 import com.example.kachrafreeresident.ui.main.RegisterScreen
-import com.example.kachrafreeresident.ui.main.StatusScreen
+import org.osmdroid.util.GeoPoint
 
 class MainActivity : ComponentActivity() {
 
-    companion object {
-        // How often the status screen asks the server for a fresh ETA.
-        private const val STATUS_POLL_INTERVAL_MS = 15_000L
+    // The truck status polling happens in AlertService, so alerts keep
+    // arriving after this screen (or the whole app) is closed. This just
+    // mirrors its result once a second while the screen is visible - a
+    // local memory read, not a network call.
+    //
+    // The one network call made here is a tiny ping every PING_INTERVAL_MS
+    // while the screen is open, for the "Server reachable" indicator. It
+    // works before registering too, when AlertService isn't running.
+    private companion object {
+        private const val UI_REFRESH_MS = 1_000L
+        private const val PING_INTERVAL_MS = 10_000L
     }
 
     private lateinit var prefs: SharedPreferences
 
-    // These back the screen directly, so changing them updates the UI
-    // right away - no manual "re-render" calls needed.
+    // These back the screen directly: changing one redraws the UI.
     private var registered by mutableStateOf(false)
     private var editing by mutableStateOf(false)
 
-    private var phoneNumber by mutableStateOf("")
+    private var username by mutableStateOf("")
+    private var truckId by mutableStateOf("")
     private var latitudeText by mutableStateOf("")
     private var longitudeText by mutableStateOf("")
+    private var houseAddress by mutableStateOf<String?>(null)
     private var alertMinutes by mutableStateOf(10)
 
-    private var truckStatus by mutableStateOf<ResidentApi.TruckStatus?>(null)
+    private var truckStatus by mutableStateOf<ServerApi.TruckStatus?>(null)
+    // null until the first ping finishes.
+    private var serverReachable by mutableStateOf<Boolean?>(null)
 
-    private val locationPermissionLauncher =
-        registerForActivityResult(
-            ActivityResultContracts.RequestMultiplePermissions()
-        ) { permissions ->
+    // The map, permissions and search live in LocationPickerActivity. This
+    // only launches it and reads back what the resident picked.
+    private val locationPickerLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val data = result.data
+            if (result.resultCode != Activity.RESULT_OK || data == null) return@registerForActivityResult
 
-            val granted =
-                permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-
-            if (granted) {
-                captureCurrentLocation()
-            } else {
-                Toast.makeText(
-                    this,
-                    "Location permission is required to auto-fill your house location",
-                    Toast.LENGTH_LONG
-                ).show()
+            val latitude = data.getDoubleExtra(LocationPickerActivity.EXTRA_RESULT_LATITUDE, Double.NaN)
+            val longitude = data.getDoubleExtra(LocationPickerActivity.EXTRA_RESULT_LONGITUDE, Double.NaN)
+            if (!latitude.isNaN() && !longitude.isNaN()) {
+                latitudeText = latitude.toString()
+                longitudeText = longitude.toString()
+                houseAddress = data.getStringExtra(LocationPickerActivity.EXTRA_RESULT_ADDRESS)
             }
         }
 
-    // Polls the server for this resident's truck/ETA while the status
-    // screen is visible. Registration itself does not need this - only
-    // showing live status does.
-    private val statusHandler = Handler(Looper.getMainLooper())
-    private val statusRunnable = object : Runnable {
+    // Asked for at registration, so AlertService's notifications can be shown
+    // (Android 13+).
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val uiRefreshRunnable = object : Runnable {
         override fun run() {
-            refreshTruckStatus()
-            statusHandler.postDelayed(this, STATUS_POLL_INTERVAL_MS)
+            // Keep showing the last status while the server is unreachable
+            // (lastStatus is null then); the server pill says it's offline.
+            val latest = AlertService.lastStatus
+            if (latest != null) truckStatus = latest
+            uiHandler.postDelayed(this, UI_REFRESH_MS)
         }
     }
 
-    // Used only once, to fill in the house location fields during
-    // registration - removes itself as soon as one fix arrives.
-    private val oneShotLocationListener = object : LocationListener {
-
-        override fun onLocationChanged(location: Location) {
-            applyLocation(location)
-            locationManager().removeUpdates(this)
-        }
-
-        override fun onProviderEnabled(provider: String) {}
-        override fun onProviderDisabled(provider: String) {}
-
-        @Deprecated("Deprecated in API 29")
-        override fun onStatusChanged(
-            provider: String?,
-            status: Int,
-            extras: Bundle?
-        ) {
+    private val pingRunnable = object : Runnable {
+        override fun run() {
+            Thread {
+                val reachable = ServerApi.ping()
+                runOnUiThread { serverReachable = reachable }
+            }.start()
+            uiHandler.postDelayed(this, PING_INTERVAL_MS)
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        prefs = getSharedPreferences(
-            AppPrefs.FILE_NAME,
-            MODE_PRIVATE
-        )
+        prefs = getSharedPreferences(AppPrefs.FILE_NAME, MODE_PRIVATE)
+        loadSavedRegistration()
 
-        registered = prefs.getBoolean(AppPrefs.KEY_REGISTERED, false)
-        phoneNumber = prefs.getString(AppPrefs.KEY_PHONE_NUMBER, "").orEmpty()
-        latitudeText = prefs.getString(AppPrefs.KEY_LATITUDE, "").orEmpty()
-        longitudeText = prefs.getString(AppPrefs.KEY_LONGITUDE, "").orEmpty()
-        alertMinutes = prefs.getInt(AppPrefs.KEY_ALERT_MINUTES, 10)
+        // Covers the case where the app was reopened after AlertService got
+        // killed (e.g. by the OS) without the phone rebooting - BootReceiver
+        // only handles the reboot case.
+        if (registered) startAlertService()
 
         setContent {
             KachraFreeResidentTheme {
-                if (registered && !editing) {
-                    StatusScreen(
-                        phoneNumber = phoneNumber,
-                        latitudeText = latitudeText,
-                        longitudeText = longitudeText,
-                        alertMinutes = alertMinutes,
-                        truckStatus = truckStatus,
-                        onEdit = {
-                            editing = true
-                            refreshStatusPolling()
-                        }
-                    )
-                } else {
-                    RegisterScreen(
-                        phoneNumber = phoneNumber,
-                        onPhoneNumberChange = { phoneNumber = it },
-                        latitudeText = latitudeText,
-                        onLatitudeChange = { latitudeText = it },
-                        longitudeText = longitudeText,
-                        onLongitudeChange = { longitudeText = it },
-                        onUseCurrentLocation = { requestLocationAndCapture() },
-                        alertMinutes = alertMinutes,
-                        onAlertMinutesChange = { alertMinutes = it },
-                        isEditing = registered && editing,
-                        onCancel = {
-                            editing = false
-                            refreshStatusPolling()
-                        },
-                        onSubmit = { submitRegistration() }
-                    )
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    val houseLatLng = geoPointOrNull(latitudeText.toDoubleOrNull(), longitudeText.toDoubleOrNull())
+
+                    // Registered: the map is the main page; settings opens
+                    // the registration form to edit it.
+                    if (registered && !editing && houseLatLng != null) {
+                        HomeScreen(
+                            status = truckStatus,
+                            serverReachable = serverReachable,
+                            houseLatLng = houseLatLng,
+                            onOpenSettings = { editing = true }
+                        )
+                    } else {
+                        // The system Back button leaves the settings page too.
+                        BackHandler(enabled = editing) { cancelEditing() }
+                        RegisterScreen(
+                            serverReachable = serverReachable,
+                            username = username,
+                            onUsernameChange = { username = it },
+                            truckId = truckId,
+                            onTruckIdChange = { truckId = it },
+                            houseLocationLabel = houseLocationLabel(),
+                            onPickLocation = { launchLocationPicker() },
+                            alertMinutes = alertMinutes,
+                            onAlertMinutesChange = { alertMinutes = it },
+                            isEditing = registered && editing,
+                            onCancel = { cancelEditing() },
+                            onSubmit = { submitRegistration() }
+                        )
+                    }
                 }
             }
         }
     }
 
+    private fun loadSavedRegistration() {
+        username = prefs.getString(AppPrefs.KEY_USERNAME, "").orEmpty()
+        // Registered means there's a saved username to register under.
+        registered = prefs.getBoolean(AppPrefs.KEY_REGISTERED, false) && username.isNotBlank()
+        truckId = prefs.getString(AppPrefs.KEY_TRUCK_ID, "").orEmpty()
+        latitudeText = prefs.getString(AppPrefs.KEY_LATITUDE, "").orEmpty()
+        longitudeText = prefs.getString(AppPrefs.KEY_LONGITUDE, "").orEmpty()
+        houseAddress = prefs.getString(AppPrefs.KEY_ADDRESS, null)
+        alertMinutes = prefs.getInt(AppPrefs.KEY_ALERT_MINUTES, 10)
+    }
+
+    /** Leaves the settings page without saving: puts back the saved values. */
+    private fun cancelEditing() {
+        loadSavedRegistration()
+        editing = false
+    }
+
     override fun onResume() {
         super.onResume()
-        refreshStatusPolling()
+        uiHandler.post(uiRefreshRunnable)
+        uiHandler.post(pingRunnable)
     }
 
     override fun onPause() {
         super.onPause()
-        statusHandler.removeCallbacks(statusRunnable)
+        uiHandler.removeCallbacks(uiRefreshRunnable)
+        uiHandler.removeCallbacks(pingRunnable)
     }
 
-    private fun refreshStatusPolling() {
-        statusHandler.removeCallbacks(statusRunnable)
+    /** A map point, or null if either number is missing. */
+    private fun geoPointOrNull(latitude: Double?, longitude: Double?): GeoPoint? {
+        if (latitude == null || longitude == null) return null
+        return GeoPoint(latitude, longitude)
+    }
 
-        if (registered && !editing) {
-            statusHandler.post(statusRunnable)
+    private fun houseLocationLabel(): String {
+        val address = houseAddress
+        if (address != null) return address
+        val lat = latitudeText.toDoubleOrNull()
+        val lng = longitudeText.toDoubleOrNull()
+        if (lat == null || lng == null) return "Not set yet"
+        return "%.6f, %.6f".format(lat, lng)
+    }
+
+    private fun launchLocationPicker() {
+        val intent = Intent(this, LocationPickerActivity::class.java)
+        // Open the map on the house picked last time, if there is one.
+        val lat = latitudeText.toDoubleOrNull()
+        val lng = longitudeText.toDoubleOrNull()
+        if (lat != null && lng != null) {
+            intent.putExtra(LocationPickerActivity.EXTRA_INITIAL_LATITUDE, lat)
+            intent.putExtra(LocationPickerActivity.EXTRA_INITIAL_LONGITUDE, lng)
+        }
+        locationPickerLauncher.launch(intent)
+    }
+
+    private fun startAlertService() {
+        try {
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, AlertService::class.java).apply { action = AlertService.ACTION_START }
+            )
+        } catch (_: Exception) {
+            // Nothing more we can do here; the resident can still see status
+            // whenever they reopen the app.
         }
     }
 
-    private fun refreshTruckStatus() {
-        val phone = phoneNumber
+    /** Blocking; call off the main thread. */
+    private fun sendRegistration(): ServerApi.RegisterResult {
+        // submitRegistration() has already checked these are numbers.
+        val latitude = latitudeText.toDouble()
+        val longitude = longitudeText.toDouble()
+        return ServerApi.register(username, truckId, latitude, longitude, alertMinutes, houseAddress)
+    }
+
+    private fun submitRegistration() {
+        // Usernames aren't case-sensitive: "Asha" and "asha" are the same resident.
+        username = username.trim().lowercase()
+        truckId = truckId.trim()
+
+        val problem = AppPrefs.usernameProblem(username)
+        if (problem != null) {
+            Toast.makeText(this, problem, Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (truckId.isBlank()) {
+            Toast.makeText(this, "Enter the Truck ID for your area", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (latitudeText.toDoubleOrNull() == null || longitudeText.toDoubleOrNull() == null) {
+            Toast.makeText(this, "Choose your house on the map first", Toast.LENGTH_SHORT).show()
+            return
+        }
 
         Thread {
-            val result = ResidentApi.fetchStatus(phone)
+            val result = sendRegistration()
             runOnUiThread {
-                truckStatus = result
+                if (result == ServerApi.RegisterResult.UNKNOWN_TRUCK) {
+                    // Stay on the form so the ID can be fixed.
+                    Toast.makeText(this, "No truck with ID $truckId. Check it and try again.", Toast.LENGTH_LONG).show()
+                } else {
+                    // Server unreachable is fine: it's saved here and re-sent
+                    // automatically once the server is back.
+                    saveRegistrationLocally()
+                    val message = if (result == ServerApi.RegisterResult.OK) {
+                        "Registered"
+                    } else {
+                        "Saved on this phone. Will send to the server when it's reachable."
+                    }
+                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                }
             }
         }.start()
     }
 
-    private fun submitRegistration() {
-
-        val phone = phoneNumber.trim()
-        val latitude = latitudeText.toDoubleOrNull()
-        val longitude = longitudeText.toDoubleOrNull()
-
-        if (phone.isBlank()) {
-            Toast.makeText(this, "Enter your phone number", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        if (latitude == null || longitude == null) {
-            Toast.makeText(this, "Set your house location first", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        // Registration is local-first: this succeeds even if the server
-        // is unreachable, same as the driver app's "keep the last known
-        // state on this phone" approach.
+    private fun saveRegistrationLocally() {
         prefs.edit()
             .putBoolean(AppPrefs.KEY_REGISTERED, true)
-            .putString(AppPrefs.KEY_PHONE_NUMBER, phone)
+            .putString(AppPrefs.KEY_USERNAME, username)
+            .putString(AppPrefs.KEY_TRUCK_ID, truckId)
             .putString(AppPrefs.KEY_LATITUDE, latitudeText)
             .putString(AppPrefs.KEY_LONGITUDE, longitudeText)
+            .putString(AppPrefs.KEY_ADDRESS, houseAddress)
             .putInt(AppPrefs.KEY_ALERT_MINUTES, alertMinutes)
             .apply()
 
-        phoneNumber = phone
         registered = true
         editing = false
         truckStatus = null
 
-        refreshStatusPolling()
-
-        Thread {
-            val success = ResidentApi.register(phone, latitude, longitude, alertMinutes)
-            runOnUiThread {
-                Toast.makeText(
-                    this,
-                    if (success) {
-                        "Registered"
-                    } else {
-                        "Saved on this phone - server unreachable, will sync when it's back"
-                    },
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        }.start()
-    }
-
-    private fun requestLocationAndCapture() {
-        if (hasLocationPermission()) {
-            captureCurrentLocation()
-        } else {
-            locationPermissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                )
-            )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
-    }
-
-    private fun hasLocationPermission(): Boolean {
-
-        return ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED ||
-        ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-    }
-
-    private fun captureCurrentLocation() {
-
-        val manager = locationManager()
-
-        val provider = when {
-            isProviderEnabled(manager, LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
-            isProviderEnabled(manager, LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
-            else -> null
-        }
-
-        if (provider == null) {
-            Toast.makeText(
-                this,
-                "Turn on Location, or enter your coordinates manually",
-                Toast.LENGTH_LONG
-            ).show()
-            return
-        }
-
-        try {
-            val lastKnown = manager.getLastKnownLocation(provider)
-
-            if (lastKnown != null) {
-                applyLocation(lastKnown)
-                return
-            }
-
-            Toast.makeText(this, "Getting your location...", Toast.LENGTH_SHORT).show()
-
-            manager.requestLocationUpdates(
-                provider,
-                0L,
-                0f,
-                oneShotLocationListener,
-                Looper.getMainLooper()
-            )
-
-        } catch (_: SecurityException) {
-            Toast.makeText(this, "Location permission is required", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    private fun applyLocation(location: Location) {
-        latitudeText = location.latitude.toString()
-        longitudeText = location.longitude.toString()
-    }
-
-    private fun locationManager(): LocationManager {
-        return getSystemService(LocationManager::class.java)
-    }
-
-    private fun isProviderEnabled(manager: LocationManager, provider: String): Boolean {
-        return try {
-            manager.isProviderEnabled(provider)
-        } catch (_: Exception) {
-            false
-        }
+        startAlertService()
     }
 }
