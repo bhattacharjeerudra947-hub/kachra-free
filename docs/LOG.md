@@ -152,6 +152,12 @@ fallbacks for failed API calls. The conventions are written down in
   validated (an old 36-character ID broke the rules); deleting no longer
   validates.
 
+- **Route server "400 Bad Request" for every truck.** Stops clicked on a
+  side copy of the admin map (Leaflet repeats the world) were saved with
+  longitudes like -271.6 instead of 88.4, which OSRM rejects. Map clicks are
+  now wrapped into -180..180, Save stops also wraps existing stops, and the
+  server refuses any position outside -90..90 / -180..180.
+
 ## Testing history
 
 - The server was tested with a scripted end-to-end scenario (with a fake

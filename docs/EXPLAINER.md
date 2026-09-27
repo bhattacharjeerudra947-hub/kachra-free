@@ -217,7 +217,8 @@ and let the driver add collection stops (CLAUDE.md section 1).
   - **Next stop**: "Next stop: 3. Janpath Market, 240 m away" (distance from
     the phone's own position), or "All stops done for today".
   - **Garbage collected at N. Name**: a big green button that appears when
-    the phone is within **30 m** of a stop that isn't collected yet (the
+    the phone is within the **collect-button radius** (admin setting
+    `stopRadiusMeters`, default **30 m**) of a stop that isn't collected yet (the
     closest one; usually the next stop, another one if the driver skipped
     ahead). Pressing it → `POST /api/trucks/collected`.
   - **Collection stops** list with each stop's status: `✓ collected`,
@@ -436,7 +437,7 @@ status-bar notification.
   "alerts": {
     "+919876543210|TRUCK-1|2026-09-26": { "message": "…", "sentAt": 1790000200.0 }
   },
-  "settings": { "stopRadiusMeters": 50, "secondsPerStop": 120, "routeRefreshMinutes": 2,
+  "settings": { "stopRadiusMeters": 30, "secondsPerStop": 120, "routeRefreshMinutes": 2,
                 "fallbackSpeedKmh": 20 }
 }
 ```
@@ -492,7 +493,7 @@ once (`POST /api/trucks/stop-sharing`).
 ### 8.3 Collected and skipped stops
 
 The driver decides when a stop is done: **Garbage collected** (shown within
-30 m of the stop) → `POST /api/trucks/collected` →
+the collect-button radius, 30 m by default) → `POST /api/trucks/collected` →
 
 ```text
 today's run.visits[stop] = { collectedAt: now }
@@ -641,8 +642,16 @@ So it refreshes every 2 minutes by default, and immediately after the truck
 reaches a new stop. One request per truck, shared by all its residents.
 
 **Failure handling:** an OSRM error sets the truck's `routingError` (shown in
-the admin Alerts panel) and **backs off that truck for 120 s**. Success clears
-the error.
+the admin Alerts panel) and **backs off that truck for 30 s**. The error
+clears on the next success, straight away when the truck's stops are saved
+or a driver adds a stop (those also end the back-off, so the new stops are
+routed within 10 s), and at every server start (a saved error describes the
+previous run).
+
+**At server start** everything is read back from `db.json`: trucks and their
+last positions, stops, cached OSRM roads and driven roads, history,
+residents and settings. The routing loop runs once immediately, so any leg
+still missing a road is fetched within seconds.
 
 ### 8.10 OSRM, Nominatim and Photon clients (`osm.py`)
 
@@ -710,6 +719,9 @@ so ETAs and "usually around" hints work before any real history exists.
   (constant-time).
 - **Numbers:** booleans are rejected where numbers are expected (Python
   treats `True` as `1`).
+- **Positions:** every latitude must be −90…90 and longitude −180…180 (400
+  otherwise). The admin map wraps clicks on its repeated side copies of the
+  world back into that range, and does the same to stops when saving them.
 
 ---
 
@@ -742,7 +754,8 @@ app checks its Truck ID with this before it starts tracking.
 ```
 → same shape as above, including the new `"Stop N"` at the end (404 for an unknown truck).
 
-In every driver response, each stop is
+Every driver response also carries `collectRadiusMeters` (the admin
+`stopRadiusMeters` setting). In it, each stop is
 `{"id", "name", "latitude", "longitude", "status"}` with `status` =
 `collected` / `skipped` / `next` / `pending` (section 8.3).
 
@@ -843,7 +856,7 @@ through lines (non-interactive) so stops can be added on top of roads.
 
 | Setting | Default | Used in |
 |---|---|---|
-| `stopRadiusMeters` | 50 m | "The truck is at your stop" for residents (8.5) |
+| `stopRadiusMeters` | 30 m | **Collect-button radius:** within it, the driver app shows **Garbage collected** (sent to the app with every stop list as `collectRadiusMeters`), and residents see "the truck is at your stop" (8.5). It never marks a stop collected by itself |
 | `secondsPerStop` | 120 s | Stoppage time for stops with no history (8.7) |
 | `routeRefreshMinutes` | 2 min | Approach refresh interval; freshness window is 2× this (8.8, 8.9) |
 | `fallbackSpeedKmh` | 20 km/h | Rough drive time when OSRM is unavailable (8.8) |
@@ -853,7 +866,6 @@ through lines (non-interactive) so stops can be added on top of roads.
 | Constant | Value | Where |
 |---|---|---|
 | Driver GPS/upload interval | 2 s | `LocationService.UPDATE_INTERVAL_MS` |
-| Driver "Garbage collected" button radius | 30 m | `MainActivity.COLLECT_RADIUS_METERS` |
 | Server pill ping (apps, when not otherwise talking to the server) | 2 s | `PING_INTERVAL_MS` |
 | Network-fix suppression window | 20 s (2 × interval) | `LocationService` |
 | Add-stop undo window | 20 s | driver `MainActivity.ADD_STOP_DELAY_MS` |
@@ -861,9 +873,9 @@ through lines (non-interactive) so stops can be added on top of roads.
 | Resident status polling | 2 s | `AlertService.POLL_INTERVAL_MS` |
 | Resident UI refresh | 1 s | resident `MainActivity.UI_REFRESH_MS` |
 | Truck offline after | 10 s without a location (or at once on Stop) | `eta.ACTIVE_SECONDS` |
-| Routing loop | every 10 s | `routing.updater` |
+| Routing loop | at start, then every 10 s | `routing.updater` |
 | OSRM batch size | 12 stops | `routing.STATIC_CHUNK` |
-| OSRM error back-off | 120 s per truck | `routing.RETRY_AFTER_ERROR_SECONDS` |
+| OSRM error back-off | 30 s per truck (cleared early when its stops change) | `routing.RETRY_AFTER_ERROR_SECONDS` |
 | External request spacing | ≥ 1 s | `osm._get_json` |
 | External request timeout | 15 s | `osm._get_json` |
 | Search cache limit | 500 entries | `osm.search` |

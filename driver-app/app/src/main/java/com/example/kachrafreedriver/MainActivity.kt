@@ -31,8 +31,6 @@ class MainActivity : ComponentActivity() {
         // the pill at the top. (While tracking, the location uploads show it.)
         private const val PING_INTERVAL_MS = 2_000L
 
-        // The "Garbage collected" button shows within this distance of a stop.
-        private const val COLLECT_RADIUS_METERS = 30f
     }
 
     private lateinit var prefs: SharedPreferences
@@ -218,12 +216,12 @@ class MainActivity : ComponentActivity() {
             nextStopText = "All stops done for today"
         }
 
-        // "Garbage collected" is offered for the closest stop within 30 m
-        // that isn't collected yet (usually the next one; another one if the
-        // driver skipped ahead).
+        // "Garbage collected" is offered for the closest stop within the
+        // admin panel's radius (30 m by default) that isn't collected yet
+        // (usually the next one; another one if the driver skipped ahead).
         collectStop = null
         if (fix == null) return
-        var closest = COLLECT_RADIUS_METERS
+        var closest = ServerApi.collectRadiusMeters
         for (i in stops.indices) {
             val stop = stops[i]
             if (stop.status == "collected") continue

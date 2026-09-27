@@ -115,13 +115,13 @@
   <section>
     <h2>Settings</h2>
     <form id="settings-form" class="grid-form">
-      <label>Stop radius (m) <input name="stopRadiusMeters" type="number" step="any"></label>
+      <label>Collect-button radius (m) <input name="stopRadiusMeters" type="number" step="any"></label>
       <label>Default time per stop (s) <input name="secondsPerStop" type="number" step="any"></label>
       <label>Road refresh (min) <input name="routeRefreshMinutes" type="number" step="any"></label>
       <label>Average car speed, fallback (km/h) <input name="fallbackSpeedKmh" type="number" step="any"></label>
       <p class="hint span">
         ETA = drive time along real roads + typical collecting time at each stop before the resident's.<br>
-        Stop radius: how close the truck must be to count as "at" a stop.
+        Collect-button radius: how close the driver must be to a stop to see the "Garbage collected" button (residents then see "the truck is at your stop"). Stops are only ever marked collected by that button.
         Default time per stop: for stops with no collection history yet.
         Road refresh: how often the road from each moving truck to its next stop is re-fetched.
         Average car speed: rough drive times if the route server can't be reached (shown under Alerts).</p>
