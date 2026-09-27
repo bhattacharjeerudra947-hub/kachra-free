@@ -67,11 +67,11 @@ fun HomeScreen(
 
         AndroidView(
             modifier = Modifier.fillMaxSize(),
+            // Runs once, when the map is first shown: start on the house.
             factory = {
-                mapView.apply {
-                    controller.setZoom(16.0)
-                    controller.setCenter(houseLatLng)
-                }
+                mapView.controller.setZoom(16.0)
+                mapView.controller.setCenter(houseLatLng)
+                mapView
             },
             // Runs again whenever new status arrives: redraw everything.
             update = { map ->
@@ -204,7 +204,8 @@ private fun cardText(status: ServerApi.TruckStatus?): CardText {
         "on_the_way" -> {
             var big = status.etaMinutes.toString()
             if (status.etaIsRough) big = "~$big"
-            val stopsAway = status.stopsAway ?: 0
+            var stopsAway = 0
+            if (status.stopsAway != null) stopsAway = status.stopsAway
             var line = if (stopsAway == 0) {
                 "Your stop is next"
             } else if (stopsAway == 1) {
@@ -223,7 +224,12 @@ private fun cardText(status: ServerApi.TruckStatus?): CardText {
             if (status.usualTime != null) line = "Usually at your stop around ${status.usualTime}"
             return CardText("--", "", "Not on the road", GREY, line)
         }
-        else -> return CardText("--", "", "Needs attention", RED, status.message ?: "")
+        else -> {
+            // unknown_truck / no_stops: the server's message says what's wrong.
+            var line = ""
+            if (status.message != null) line = status.message
+            return CardText("--", "", "Needs attention", RED, line)
+        }
     }
 }
 
@@ -291,7 +297,9 @@ private fun EtaCard(status: ServerApi.TruckStatus?, serverReachable: Boolean?) {
                     Spacer(modifier = Modifier.width(8.dp))
                     var where = status.stopName
                     // Name it by its number too, unless the name already is "Stop N".
-                    val number = "Stop ${(status.stopIndex ?: 0) + 1}"
+                    var stopNumber = 1
+                    if (status.stopIndex != null) stopNumber = status.stopIndex + 1
+                    val number = "Stop $stopNumber"
                     if (where != number) where = "$number · $where"
                     if (status.stopDistanceMeters != null) where += " · ${status.stopDistanceMeters} m from home"
                     Text(

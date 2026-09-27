@@ -165,7 +165,10 @@ class MainActivity : ComponentActivity() {
         } else if (uploadOk == null) {
             serverText = "Server: connecting..."
         } else if (uploadOk) {
-            serverText = "Server: connected, last sent ${secondsAgo(sentAt ?: 0L)}s ago"
+            // A successful upload always sets sentAt; 0 is only a safe default.
+            var secondsSinceSent = 0L
+            if (sentAt != null) secondsSinceSent = secondsAgo(sentAt)
+            serverText = "Server: connected, last sent ${secondsSinceSent}s ago"
         } else if (sentAt != null) {
             serverText = "Server: unreachable, last sent ${secondsAgo(sentAt)}s ago"
         } else {
@@ -188,7 +191,10 @@ class MainActivity : ComponentActivity() {
 
     /** The stop list, the next stop, and whether to show "Garbage collected". */
     private fun refreshStops(fix: LocationService.LocationSnapshot?) {
-        val stops = LocationService.routeStops ?: emptyList()
+        // routeStops is null until the first reply from the server.
+        var stops: List<ServerApi.Stop> = emptyList()
+        val fromServer = LocationService.routeStops
+        if (fromServer != null) stops = fromServer
 
         val lines = mutableListOf<String>()
         for (i in stops.indices) {

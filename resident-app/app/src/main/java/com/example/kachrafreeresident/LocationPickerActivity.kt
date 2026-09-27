@@ -209,7 +209,12 @@ class LocationPickerActivity : ComponentActivity() {
             }
 
             runOnUiThread {
-                placeResults = results ?: emptyList()
+                // results is null when the search failed: show no places then.
+                if (results != null) {
+                    placeResults = results
+                } else {
+                    placeResults = emptyList()
+                }
                 searchMessage = message
             }
         }.start()

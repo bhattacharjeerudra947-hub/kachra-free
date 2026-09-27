@@ -14,7 +14,7 @@ they chose. Everything runs on free services.
 | `driver-app/` | Android app for the truck: enter Truck ID, start, add collection stops as you go. |
 | `resident-app/` | Android app for residents: enter your Truck ID, pick your house on a map, see the truck, its road and ETA, get alerts. |
 | `server/` | Python server (standard library only) + admin panel at `/admin`. |
-| `docs/` | [EXPLAINER.md](docs/EXPLAINER.md) (full technical explainer: every feature, formula, endpoint and dependency), [SETUP.md](docs/SETUP.md) (installing everything, running a demo, the emulator). |
+| `docs/` | [EXPLAINER.md](docs/EXPLAINER.md) (Part 1: the whole project in plain English from zero, with demo Q&A; Part 2: every feature, formula, endpoint and dependency), [SETUP.md](docs/SETUP.md) (installing everything, running a demo, the emulator). |
 
 ## Quick start
 

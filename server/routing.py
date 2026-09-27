@@ -106,6 +106,8 @@ def same_stop(now, before):
 
 
 def run_static(job):
+    """Ask OSRM for the roads between a chunk of consecutive stops, and
+    store each road (with its drive time) on its starting stop as "leg"."""
     truck_id, start, chunk = job
     points = []
     for stop in chunk:
@@ -140,6 +142,8 @@ def run_static(job):
 
 
 def run_approach(job):
+    """Ask OSRM for the road from the truck to its next stop, and store it
+    on the truck as "approach" (eta.py uses it for the live ETA)."""
     truck_id, next_index, points = job
     legs = osm.route(points)
     with db.lock:
@@ -158,10 +162,13 @@ def updater():
 
 
 def update_once():
+    """One round of the background loop: work out which roads are missing
+    or out of date, then fetch them."""
     # 1. Under the lock, quickly decide which requests are needed.
     jobs = []  # ("static" or "approach", job)
     with db.lock:
         for truck_id, truck in db.data["trucks"].items():
+            # (0 = "never failed", so a truck with no error is always ready.)
             if time.time() - _last_error_at.get(truck_id, 0) < RETRY_AFTER_ERROR_SECONDS:
                 continue  # failed recently: give the route server a break
             for job in static_jobs(truck_id, truck):

@@ -47,20 +47,21 @@ const val HOME_COLOR = 0xFFE03131.toInt()      // red
 @Composable
 fun rememberMapView(): MapView {
     val context = LocalContext.current
+    // remember: make the map only once, not every time the screen redraws.
     val mapView = remember {
-        Configuration.getInstance().apply {
-            // OpenStreetMap's tile servers ask every app to identify itself.
-            userAgentValue = context.packageName
-            // Keep the tile cache inside the app: no storage permission needed.
-            osmdroidBasePath = File(context.cacheDir, "osmdroid")
-            osmdroidTileCache = File(osmdroidBasePath, "tiles")
-        }
-        MapView(context).apply {
-            setTileSource(TileSourceFactory.MAPNIK)
-            setMultiTouchControls(true)
-            zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
-            isTilesScaledToDpi = true
-        }
+        val config = Configuration.getInstance()
+        // OpenStreetMap's tile servers ask every app to identify itself.
+        config.userAgentValue = context.packageName
+        // Keep the tile cache inside the app: no storage permission needed.
+        config.osmdroidBasePath = File(context.cacheDir, "osmdroid")
+        config.osmdroidTileCache = File(config.osmdroidBasePath, "tiles")
+
+        val map = MapView(context)
+        map.setTileSource(TileSourceFactory.MAPNIK)  // the standard OpenStreetMap look
+        map.setMultiTouchControls(true)              // pinch to zoom
+        map.zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)  // no +/- buttons
+        map.isTilesScaledToDpi = true                // readable text on high-resolution screens
+        map
     }
     DisposableEffect(mapView) {
         onDispose { mapView.onDetach() }
@@ -110,7 +111,12 @@ private fun dp(context: Context, value: Float): Float {
 /** Draws one of the app's vector icons, in a colour, into a square on the canvas. */
 private fun drawVector(context: Context, canvas: Canvas, iconRes: Int, color: Int,
                        centerX: Float, centerY: Float, size: Float) {
-    val icon = ContextCompat.getDrawable(context, iconRes)!!.mutate()
+    // getDrawable returns null only for an icon that doesn't exist; ours are
+    // all in res/drawable, so a missing one is a bug worth crashing on.
+    val drawable = ContextCompat.getDrawable(context, iconRes)
+    if (drawable == null) throw IllegalStateException("Missing icon $iconRes")
+    // mutate: tint this copy without changing the icon everywhere else.
+    val icon = drawable.mutate()
     icon.setTint(color)
     val half = size / 2
     icon.setBounds((centerX - half).toInt(), (centerY - half).toInt(), (centerX + half).toInt(), (centerY + half).toInt())
