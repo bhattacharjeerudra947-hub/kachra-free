@@ -3,7 +3,7 @@
 // redraws the tables and the map. Forms post directly to the admin API.
 // The map is Leaflet with OpenStreetMap tiles: free, no key needed.
 
-const REFRESH_MS = 5000;
+const REFRESH_MS = 2000; // how often the page fetches fresh state
 
 let state = null;            // last response from /api/admin/state
 let selectedTruckId = null;  // truck whose stops are open in the editor
@@ -105,6 +105,15 @@ async function refresh() {
   }
 
   renderSystemAlerts();
+  // Keep the open history table up to date (today's round fills in live).
+  if (historyTruckId) {
+    if (truckById(historyTruckId)) {
+      await loadHistory();
+    } else {
+      closeHistory(); // the truck was deleted
+    }
+  }
+
   renderTrucks();
   renderTruckEditor();
   renderResidents();
@@ -136,7 +145,7 @@ function truckRow(truck) {
 
   let today = "";
   if (truck.stops.length > 0) {
-    today = `reached stop ${truck.stopsVisitedToday} of ${truck.stops.length}`;
+    today = `collected ${truck.collectedToday} of ${truck.stops.length}`;
   }
 
   let road = "—";
@@ -144,7 +153,7 @@ function truckRow(truck) {
 
   return `
     <tr>
-      <td><b>${esc(truck.id)}</b>${warning}</td>
+      <td><button class="link" data-history-truck="${esc(truck.id)}" title="Show collection history">${esc(truck.id)}</button>${warning}</td>
       <td>${onlinePill(truck)} <span class="hint">${lastLocationText(truck)}</span></td>
       <td>${truck.stops.length}</td>
       <td>${today}</td>
@@ -168,6 +177,8 @@ function lastLocationText(truck) {
   if (truck.secondsSinceUpdate === null) return "never sent a location";
   return "last location " + ago(truck.secondsSinceUpdate);
 }
+// Offline means the driver pressed Stop, or no location has arrived for 10 s
+// (no internet, no GPS, phone off...).
 
 function renderTrucks() {
   let html = "";
@@ -191,8 +202,10 @@ function renderTrucks() {
 find("#trucks").addEventListener("click", async (event) => {
   const editId = event.target.dataset.editTruck;
   const deleteId = event.target.dataset.deleteTruck;
+  const historyId = event.target.dataset.historyTruck;
 
   if (editId) openTruck(editId);
+  if (historyId) openHistory(historyId);
 
   if (deleteId && confirm(`Delete truck ${deleteId} and its stops?`)) {
     try {
@@ -217,6 +230,161 @@ find("#truck-form").addEventListener("submit", async (event) => {
     showError(error);
   }
 });
+
+// ---------------------------------------------- collection history --
+//
+// Clicking a truck's ID shows its past collection rounds: one row per day,
+// one column per stop, with when the truck arrived there and how long it
+// spent collecting.
+
+let historyTruckId = null; // truck whose history is open
+
+async function openHistory(id) {
+  historyTruckId = id;
+  await loadHistory();
+  find("#history-panel").hidden = false;
+  find("#history-panel").scrollIntoView({ behavior: "smooth" });
+}
+
+function closeHistory() {
+  historyTruckId = null;
+  find("#history-panel").hidden = true;
+}
+
+find("#close-history").addEventListener("click", closeHistory);
+
+async function loadHistory() {
+  try {
+    const history = await api("GET", "/api/admin/history?truckId=" + encodeURIComponent(historyTruckId));
+    renderHistory(history);
+  } catch (error) {
+    find("#history-summary").textContent = "Couldn't load the history: " + error.message;
+  }
+}
+
+// Seconds since 1970 -> "07:05" (the laptop's local time).
+function clock(seconds) {
+  const date = new Date(seconds * 1000);
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// A length of time in seconds -> "3 min" (or "<1 min").
+function duration(seconds) {
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 1) return "<1 min";
+  return minutes + " min";
+}
+
+// "2026-09-27" -> "Sat 27 Sep 2026"
+function niceDate(isoDate) {
+  const date = new Date(isoDate + "T00:00:00");
+  return date.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+}
+
+function historyHeader(stops) {
+  let html = "<tr><th>Day</th>";
+  for (let i = 0; i < stops.length; i++) {
+    html += `<th>${i + 1}. ${esc(stops[i].name)}</th>`;
+  }
+  html += "<th>Stops collected</th><th>Round</th></tr>";
+  return html;
+}
+
+// The first row: what's typical for each stop, from all past days.
+function usualRow(stops) {
+  let html = `<tr class="usual"><td><b>Usually</b></td>`;
+  for (const stop of stops) {
+    let cell = "—";
+    if (stop.usualTime) cell = esc(stop.usualTime);
+    html += `<td>arrives ${cell}<br><span class="hint">stops ~${duration(stop.typicalDwellSeconds)}</span></td>`;
+  }
+  html += "<td></td><td></td></tr>";
+  return html;
+}
+
+// A stop not collected that day: "skipped" if a later stop was collected,
+// otherwise just not reached (yet).
+function missedText(visits, index) {
+  for (let later = index + 1; later < visits.length; later++) {
+    if (visits[later] !== null) return "⚠ skipped";
+  }
+  return "—";
+}
+
+function dayRow(day, stopCount) {
+  let tag = `<span class="tag real">real</span>`;
+  if (day.synthetic) tag = `<span class="tag demo">demo</span>`;
+  if (day.today) tag = `<span class="tag today">today</span>`;
+
+  let html = `<tr><td>${niceDate(day.date)}<br>${tag}</td>`;
+  let visited = 0;
+  let firstArrival = null;
+  let lastDeparture = null;
+  for (let i = 0; i < day.visits.length; i++) {
+    const visit = day.visits[i];
+    if (visit === null) {
+      html += `<td class="hint">${missedText(day.visits, i)}</td>`;
+      continue;
+    }
+    visited += 1;
+
+    // Demo rounds have arrival and departure; real rounds only have the
+    // time the driver pressed "Garbage collected".
+    let from = visit.collectedAt;
+    let to = visit.collectedAt;
+    if (visit.arrived !== undefined) {
+      from = visit.arrived;
+      to = visit.left;
+      html += `<td>${clock(visit.arrived)} → ${clock(visit.left)}<br>` +
+        `<span class="hint">stopped ${duration(visit.left - visit.arrived)}</span></td>`;
+    } else {
+      html += `<td>✓ ${clock(visit.collectedAt)}<br><span class="hint">collected</span></td>`;
+    }
+    if (firstArrival === null || from < firstArrival) firstArrival = from;
+    if (lastDeparture === null || to > lastDeparture) lastDeparture = to;
+  }
+
+  let round = "";
+  if (firstArrival !== null) {
+    round = `${clock(firstArrival)} – ${clock(lastDeparture)}<br><span class="hint">${duration(lastDeparture - firstArrival)} in total</span>`;
+  }
+  html += `<td>${visited} of ${stopCount}</td><td>${round}</td></tr>`;
+  return html;
+}
+
+function renderHistory(history) {
+  find("#history-title").textContent = "Collection history: " + history.truckId;
+
+  let real = 0;
+  let demo = 0;
+  for (const day of history.days) {
+    if (day.synthetic) demo += 1;
+    else real += 1;
+  }
+
+  if (history.stops.length === 0) {
+    find("#history-summary").textContent = "This truck has no stops yet, so there's nothing to show.";
+    find("#history thead").innerHTML = "";
+    find("#history tbody").innerHTML = "";
+    return;
+  }
+  if (history.days.length === 0) {
+    find("#history-summary").textContent =
+      "No collection rounds yet. A round is recorded as the truck visits its stops " +
+      "(or use Generate demo history in Edit stops).";
+  } else {
+    find("#history-summary").textContent =
+      `${history.days.length} days: ${real} real, ${demo} demo. Each cell shows when the truck ` +
+      `arrived at that stop and how long it spent collecting there.`;
+  }
+
+  find("#history thead").innerHTML = historyHeader(history.stops);
+  let rows = usualRow(history.stops);
+  for (const day of history.days) {
+    rows += dayRow(day, history.stops.length);
+  }
+  find("#history tbody").innerHTML = rows;
+}
 
 // ---------------------------------------------------- stops editor --
 
@@ -249,8 +417,9 @@ function markDirty() {
 
 function stopFacts(stop) {
   const facts = [];
+  if (stop.status) facts.push("today: " + stop.status);
   if (stop.usualTime) facts.push("usually " + esc(stop.usualTime));
-  if (stop.typicalDwellSeconds) facts.push("~" + Math.round(stop.typicalDwellSeconds / 60) + " min collecting");
+  if (stop.typicalDwellSeconds) facts.push("stops ~" + Math.round(stop.typicalDwellSeconds / 60) + " min");
   if (stop.addedBy === "driver") facts.push("added by driver");
   if (stop.legSource === "driven") facts.push("road to next: as driven");
   if (stop.legSource === "osrm") facts.push("road to next: shortest route");
@@ -332,7 +501,8 @@ find("#save-stops").addEventListener("click", async () => {
   // Only send what the admin can edit; the server keeps the rest.
   const stops = [];
   for (const stop of stopsDraft) {
-    stops.push({ id: stop.id, name: stop.name, lat: stop.lat, lng: stop.lng });
+    // wrapLongitude also fixes stops that were saved from a copy of the map.
+    stops.push({ id: stop.id, name: stop.name, lat: stop.lat, lng: wrapLongitude(stop.lng) });
   }
   try {
     await api("POST", "/api/admin/trucks/stops", { truckId: selectedTruckId, stops: stops });
@@ -578,8 +748,9 @@ function setClickMode(mode) {
     find("#map-hint").textContent = "Click the map where the resident's house is.";
   } else {
     find("#add-stops").textContent = "Add stops by clicking the map";
-    find("#map-hint").textContent = "Each truck has its own colour: its truck icon, numbered stops (in collection order) " +
-      "and roads · Grey truck: offline · Dark dots: residents · Grey line: roads the open truck drove today";
+    find("#map-hint").textContent = "Each truck has its own colour: its truck icon, bin stops (numbered in collection " +
+      "order) and roads · ✓ collected today · ! skipped today · Grey truck: offline · Person: resident · " +
+      "Grey line: roads the open truck drove today";
   }
 }
 
@@ -613,19 +784,37 @@ function drawTruck(truck, color) {
   addMarker(truck.lat, truck.lng, html, title, true);
 }
 
+// Material "delete" icon (a dustbin) and "person" icon, as inline SVGs.
+const BIN_SVG = '<svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>';
+const PERSON_SVG = '<svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>';
+
+// A stop: a white bin on a circle in its truck's colour, the stop's number
+// in a bubble at the top right, and today's status in a bubble at the top
+// left: a green tick when collected, a yellow hazard sign when skipped.
+function stopMarkerHtml(stop, number, color, selected) {
+  let status = "";
+  if (stop.status === "collected") status = `<div class="bubble status done">✓</div>`;
+  if (stop.status === "skipped") status = `<div class="bubble status skipped">!</div>`;
+  let className = "stop-marker";
+  if (selected) className += " selected";
+  return `<div class="${className}">
+      <div class="icon" style="background:${color}">${BIN_SVG}</div>
+      <div class="bubble number" style="color:${color}; border-color:${color}">${number}</div>
+      ${status}
+    </div>`;
+}
+
 // view: the part of the map on screen. Only what's inside it is drawn.
 function drawStops(stops, color, selected, view) {
-  let className = "pin stop";
   let weight = 3;
-  if (selected) {
-    className += " selected";
-    weight = 5;
-  }
+  if (selected) weight = 5;
 
   for (let i = 0; i < stops.length; i++) {
     const stop = stops[i];
     if (view.contains([stop.lat, stop.lng])) {
-      addMarker(stop.lat, stop.lng, `<div class="${className}" style="background:${color}">${i + 1}</div>`, stop.name);
+      let title = stop.name;
+      if (stop.status) title += " (" + stop.status + " today)";
+      addMarker(stop.lat, stop.lng, stopMarkerHtml(stop, i + 1, color, selected), title);
     }
 
     // The road to the next stop: as driven, or the shortest road route (from
@@ -687,7 +876,7 @@ function renderMap(zoomToSelected = false) {
 
   for (const r of state.residents) {
     if (view.contains([r.lat, r.lng])) {
-      addMarker(r.lat, r.lng, `<div class="pin resident"></div>`, r.username + ": " + r.message);
+      addMarker(r.lat, r.lng, `<div class="resident-marker">${PERSON_SVG}</div>`, r.username + ": " + r.message);
     }
   }
 }
@@ -697,10 +886,16 @@ map.on("moveend", () => {
   if (state) renderMap();
 });
 
+// Leaflet shows copies of the world side by side, so a click on a copy can
+// give a longitude like -271.6 instead of 88.4. Bring it back to -180..180.
+function wrapLongitude(lng) {
+  return ((lng + 180) % 360 + 360) % 360 - 180;
+}
+
 map.on("click", (event) => {
   // 6 decimal places is about 10 cm: plenty.
   const lat = Number(event.latlng.lat.toFixed(6));
-  const lng = Number(event.latlng.lng.toFixed(6));
+  const lng = Number(wrapLongitude(event.latlng.lng).toFixed(6));
 
   if (clickMode === "add-stop" && stopsDraft) {
     stopsDraft.push({ id: null, name: "Stop " + (stopsDraft.length + 1), lat: lat, lng: lng });

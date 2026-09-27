@@ -1,8 +1,8 @@
 # Kachra Free — Full Technical Explainer
 
 A complete description of what this repository does and how: every feature,
-every calculation, every endpoint, every dependency and setting. AGENTS.md
-says *what* the system should do; this file says exactly how the current code
+every calculation, every endpoint, every dependency and setting. [CLAUDE.md](../CLAUDE.md)
+(the product spec, coding conventions and decisions) says *what* the system should do; this file says exactly how the current code
 does it. Setup and launch steps are in [SETUP.md](SETUP.md).
 
 **Contents**
@@ -21,8 +21,8 @@ does it. Setup and launch steps are in [SETUP.md](SETUP.md).
 12. [Security and keys](#12-security-and-keys)
 13. [Networking: reaching the laptop (ngrok)](#13-networking-reaching-the-laptop-ngrok)
 14. [Demo tools](#14-demo-tools)
-15. [Limitations and deliberate omissions](#15-limitations-and-deliberate-omissions)
-16. [How it was tested](#16-how-it-was-tested)
+15. [Limitations](#15-limitations)
+16. [Checking your changes](#16-checking-your-changes)
 
 ---
 
@@ -30,7 +30,8 @@ does it. Setup and launch steps are in [SETUP.md](SETUP.md).
 
 **The promise:** *know when your garbage truck is coming.*
 
-A driver's phone reports the truck's GPS position every 10 seconds. Each truck
+A driver's phone reports the truck's GPS position every 2 seconds, and the
+driver presses **Garbage collected** at each stop. Each truck
 has an ordered list of **stops**: collection points where it parks and nearby
 residents bring their garbage out (the truck never goes house to house). A
 resident registers with the **Truck ID** of the truck serving their area and
@@ -39,12 +40,12 @@ The server works out when the truck will reach that stop and alerts the
 resident once, when it's within the number of minutes they chose.
 
 ```text
- driver-app ── POST /api/trucks/location every 10 s ─▶ ┌────────────────────────────────┐
+ driver-app ── POST /api/trucks/location every 2 s ──▶ ┌────────────────────────────────┐
             ◀─ this truck's stops (two-way sync) ──────│ server/  (Python stdlib)       │
-            ── POST /api/trucks/stops  ("Add stop") ─▶ │  stop visits → history         │◀─▶ OSRM
+            ── POST /api/trucks/collected, /stops ──▶ │  collected stops → history     │◀─▶ OSRM
                                                       │  roads driven → GPS tracks     │    (road routes,
  resident-app                                         │  ETA = road drive time         │     drive times)
-   AlertService ── GET /api/residents/status /15 s ──▶ │      + typical collecting time │◀─▶ Nominatim
+   AlertService ── GET /api/residents/status / 2 s ──▶ │      + typical collecting time │◀─▶ Nominatim
    MainActivity ── POST /api/residents/register ─────▶ │  threshold alerts (once/round) │    (place search)
    Picker       ── GET /api/places/search, suggest ──▶ │  data/db.json + data/tracks/   │◀─▶ Photon
                                                       │                                │    (suggestions)
@@ -71,12 +72,11 @@ Design rules the code follows throughout:
 ```text
 kachra-free/
 ├── README.md                      Short intro and quick start
+├── CLAUDE.md                      Product spec, coding conventions, decisions (gitignored)
 ├── docs/
-│   ├── AGENTS.md                  The product specification
 │   ├── EXPLAINER.md               This file
-│   ├── SETUP.md                   Installing tools, building, running a demo
-│   ├── TODO_FOR_YOU.md            What still needs a human (real-phone testing)
-│   └── LOG.md                     (empty, yours)
+│   ├── SETUP.md                   Installing tools, building, running a demo, emulator
+│   └── LOG.md                     Development log: what changed, was removed or fixed, and why
 ├── driver-app/                    Android app for the truck
 │   ├── build.gradle.kts           Plugin versions
 │   ├── settings.gradle.kts        Repositories, project name
@@ -114,7 +114,7 @@ kachra-free/
 └── server/
     ├── server.py                  HTTP server, routing, auth, every endpoint
     ├── db.py                      JSON "database", lock, GPS track files
-    ├── eta.py                     Visits, history, roads, ETA, status
+    ├── eta.py                     Collected stops, history, roads, ETA, status
     ├── routing.py                 Background thread fetching OSRM routes
     ├── osm.py                     OSRM + Nominatim + Photon clients (rate-limited)
     ├── alerts.py                  Threshold alerts, once per round
@@ -187,8 +187,9 @@ loaded from the unpkg CDN for the map, with OpenStreetMap tiles.
 | **Stop** | A collection point: `id`, `name`, `lat`, `lng`. Stops are ordered; **the order is the collection order.** |
 | **Leg** | The drive from stop *i* to stop *i+1*. |
 | **Run** | One truck's collection round on one calendar day. Key `"<truckId>|<YYYY-MM-DD>"`. |
-| **Visit** | Within a run, when the truck `arrived` at a stop and when it `left`. `left − arrived` = **dwell**, time spent collecting. |
-| **Resident** | Keyed by a random **resident ID** the app makes up on first use (no phone number: alerts are app notifications, so none is needed). Has a Truck ID, house location and alert threshold (5/10/15/30 min). |
+| **Visit** | A stop's record in a run. Real run: `collectedAt`, when the driver pressed **Garbage collected** there. Demo run: `arrived` and `left`; `left − arrived` = **stoppage time**. |
+| **Stop status (today)** | `collected` (button pressed), `skipped` (not collected, but a later stop was), `next` (the one after the last collected stop) or `pending`. |
+| **Resident** | Keyed by a **username** they choose (3–30 letters, digits, `.` `_` `-`; not case-sensitive). The same username registering again, on the same phone or another, is the same resident, so there are never duplicates. Has a Truck ID, house location and alert threshold (1–120 min). |
 | **Collection point** | For a resident: their truck's stop nearest their house. |
 | **Approach** | The road route from the truck's current position to its next stop, refreshed periodically. |
 | **Synthetic run** | Made-up past history for demos, flagged `synthetic: true`. |
@@ -198,18 +199,32 @@ loaded from the unpkg CDN for the map, with OpenStreetMap tiles.
 ## 5. driver-app
 
 **Purpose:** report the truck's location with no interaction while driving,
-and let the driver add collection stops (AGENTS.md section 1).
+and let the driver add collection stops (CLAUDE.md section 1).
 
 ### 5.1 Screen (`MainScreen.kt`)
 
+- **Server pill** next to the title: "Server online" / "Server offline". Not tracking: `GET /api/ping` every **2 s**. Tracking: whether the last location upload got through (no extra requests).
 - **Truck ID** text field (locked while sharing).
 - **Location sharing: on/off**, current position with seconds since the fix,
   and **server status** (`connecting…` / `connected, last sent Ns ago` /
   `unreachable, last sent Ns ago`).
-- **Start / Stop sharing location** button.
-- While sharing: the truck's **Collection stops** list, synced from the
-  server, and **Add stop here**. Pressing it starts a **20-second countdown**
-  with **Undo**; only after 20 s is the stop sent.
+- **Start / Stop sharing location** button. Start first asks the server
+  whether the Truck ID exists (`GET /api/trucks?truckId=…`, button shows
+  "Checking Truck ID…"): unknown → "No truck with ID X on the server. Ask
+  the admin to add it."; unreachable → "Can't reach the server to check the
+  Truck ID"; only a known ID goes on to permissions and tracking.
+- While sharing:
+  - **Next stop**: "Next stop: 3. Janpath Market, 240 m away" (distance from
+    the phone's own position), or "All stops done for today".
+  - **Garbage collected at N. Name**: a big green button that appears when
+    the phone is within the **collect-button radius** (admin setting
+    `stopRadiusMeters`, default **30 m**) of a stop that isn't collected yet (the
+    closest one; usually the next stop, another one if the driver skipped
+    ahead). Pressing it → `POST /api/trucks/collected`.
+  - **Collection stops** list with each stop's status: `✓ collected`,
+    `⚠ skipped`, `← next`.
+  - **Add stop here**: starts a **20-second countdown** with **Undo**; only
+    after 20 s is the stop sent.
 
 `MainActivity` redraws this once a second (`uiHandler`, 1000 ms) by reading
 `LocationService`'s in-memory state, so the screen always shows the service's
@@ -219,12 +234,13 @@ real state rather than a saved flag.
 
 | Aspect | Behaviour |
 |---|---|
-| Type | Foreground service, `foregroundServiceType="location"`, ongoing notification on channel `kachra_free_tracking` (low importance), id 1001 |
-| Fix interval | `UPDATE_INTERVAL_MS = 10 000` ms, `minDistance = 0` m, so a parked truck still reports |
+| Type | Foreground service, `foregroundServiceType="location"`, ongoing notification on channel `kachra_free_tracking` (low importance), id 1001. Tapping it opens the app |
+| Fix interval | `UPDATE_INTERVAL_MS = 2 000` ms, `minDistance = 0` m, so a parked truck still reports |
 | Providers | Both `GPS_PROVIDER` and `NETWORK_PROVIDER` |
-| Duplicate suppression | A network fix is dropped if a GPS fix arrived within the last 2 × 10 s |
-| Upload | Each accepted fix → `POST /api/trucks/location` on a background thread. Failures are dropped; the next fix is 10 s later |
-| Stop sync | The upload's response contains the truck's stop list → stored in `routeStops` for the screen |
+| Duplicate suppression | A network fix is dropped if a GPS fix arrived within the last 2 × 2 s |
+| Upload | Each accepted fix → `POST /api/trucks/location` on a background thread. A fix arriving while the previous upload is still on its way is skipped, so a slow network can't pile up requests. Failures are dropped; the next fix is 2 s later |
+| Stop sync | The upload's response contains the truck's stops (id, name, position, today's status) → stored in `routeStops` for the screen |
+| Stop sharing | Removes the location updates and sends `POST /api/trucks/stop-sharing`, so the truck is offline at once |
 | Location switched off | Tracking does **not** stop: notification says "waiting for GPS"; fixes resume automatically |
 | Killed by Android | `START_STICKY`: restarted with a null intent; resumes using the saved Truck ID if `tracking` was true |
 | Live state (read by UI) | `isRunning`, `lastLocation` (lat, lng, elapsed-realtime of fix), `lastUploadOk`, `lastUploadAtElapsedMillis`, `routeStops` |
@@ -240,7 +256,7 @@ clock doesn't break it.
    of the collection order and returns the new list, shown immediately.
 
 Admin edits reach the driver through the stop list returned with every
-location upload (≤ 10 s), so there's no separate sync request.
+location upload (≤ 2 s), so there's no separate sync request.
 
 ### 5.4 Storage, permissions, networking
 
@@ -251,23 +267,23 @@ location upload (≤ 10 s), so there's no separate sync request.
   `INTERNET`.
 - **HTTP:** `ServerApi.kt`, 5 s connect / 5 s read timeouts, sends
   `ngrok-skip-browser-warning: true`.
-- **Unknown Truck IDs are accepted:** the server creates the truck on first
-  contact and it appears in the admin panel.
+- **Only known Truck IDs:** trucks are added in the admin panel; the
+  server answers 404 to any driver request for an unknown ID.
 
 ---
 
 ## 6. resident-app
 
 **Purpose:** register once, see the truck, its road and the ETA, and get an
-alert even when the app is closed (AGENTS.md sections 2, 3, 5).
+alert even when the app is closed (CLAUDE.md sections 2, 3, 5).
 
 ### 6.1 Screens
 
 | Screen | Contents |
 |---|---|
-| `RegisterScreen` | Server indicator, **Truck ID (required)**, house location (opens the picker), alert range radio buttons **5 / 10 / 15 / 30 min**, Register (or Save/Cancel when editing) |
-| `HomeScreen` (main page once registered) | Full-screen osmdroid map. **Top:** server pill (online/offline) and a ⚙ settings button (opens `RegisterScreen` as **Settings**; Back or Cancel restores the saved values). **Bottom:** ETA card: big number ("8 min", "~8" when rough, "Now", "Done", "--"), a coloured state pill (On the way / At your stop / Collected / Not on the road / Needs attention), one line ("2 stops before yours", or the usual time when the truck is offline) and the collection point ("Stop 3 · Market gate · 80 m from home"). Keeps showing the last update while the server is unreachable, saying so. A button re-frames the map |
-| Map markers (all drawn from vector icons, `OsmMap.kt`) | **Truck:** white truck on an orange (`#F76707`) circle, no label. **Stops:** a white dustbin on a dark-grey circle with a **number badge** (collection order); the resident's own stop is green (`#2F9E44`) and larger. **House:** red (`#E03131`) map pin. **Route:** blue (`#1C7ED6`) line, the road to their stop (the round's planned road up to their stop while the truck is offline). Frames house + truck + their stop + route **once**, then leaves the map where the user puts it |
+| `RegisterScreen` | Server pill, **username**, **Truck ID**, house location (opens the picker), alert time as a number of minutes (**1–120**), Register (or Save/Cancel as the Settings page, where the username is locked) |
+| `HomeScreen` (main page once registered) | Full-screen osmdroid map. **Top:** server pill (online/offline) and a ⚙ settings button (opens `RegisterScreen` as **Settings**; Back or Cancel restores the saved values). **Bottom:** ETA card: big number ("8 min", "~8" when rough, "Now", "Done", "--"), a coloured state pill (On the way / At your stop / Collected / Skipped / Not on the road / Needs attention), one line ("2 stops before yours", or the usual time when the truck is offline) and the collection point ("Stop 3 · Market gate · 80 m from home"). Keeps showing the last update while the server is unreachable, saying so. A button re-frames the map |
+| Map markers (all drawn from vector icons, `OsmMap.kt`) | **Truck:** white truck on an orange (`#F76707`) circle, no label. **Stops:** a white dustbin on a dark-grey circle with a **number bubble** (collection order) at the top right and a **status bubble** at the top left: green ✓ collected today, yellow ! skipped today; the resident's own stop is green (`#2F9E44`) and larger. **House:** red (`#E03131`) map pin. **Route:** blue (`#1C7ED6`) line, the road to their stop (the round's planned road up to their stop while the truck is offline). Frames house + truck + their stop + route **once**, then leaves the map where the user puts it |
 | `LocationPickerScreen` | "Drop a pin" picker (below) |
 
 ### 6.2 House picker (`LocationPickerActivity` + `LocationPickerScreen`)
@@ -302,7 +318,8 @@ drawables (`res/drawable/ic_pin.xml`, `ic_my_location.xml`).
 
 ### 6.3 Registration
 
-1. Client validation: Truck ID and house must be set.
+1. Client validation: username (3–30 letters, digits, `.` `_` `-`), Truck ID,
+   house, and alert minutes (a whole number, 1–120) must be set.
 2. `POST /api/residents/register`:
    - **200** → saved locally, registered.
    - **404 `unknown truck`** → stays on the form ("No truck with ID …").
@@ -315,28 +332,30 @@ drawables (`res/drawable/ic_pin.xml`, `ic_my_location.xml`).
 | Aspect | Behaviour |
 |---|---|
 | Type | Foreground service, `foregroundServiceType="dataSync"`, ongoing low-importance notification on `kachra_free_watching`, id 2001 |
-| Polling | `GET /api/residents/status` every **15 s** (`POLL_INTERVAL_MS`), on its own timer, whether or not any screen is open |
+| Polling | `GET /api/residents/status` every **2 s** (`POLL_INTERVAL_MS`), on its own timer, whether or not any screen is open. A poll is skipped while the previous one is still waiting |
 | Survives | Closing the app and swiping it from Recents (it's a foreground service); being killed (`START_STICKY`); reboot (`BootReceiver`) |
 | Self-healing registration | If the server answers **404 resident not found**, it re-sends the saved registration, then fetches status again |
 | Alert notification | When the response carries an `alert` whose id differs from `last_alert_id`, posts a high-importance notification on `kachra_free_alerts` ("Garbage truck is coming") and saves the id, so each round alerts **once** |
-| Status notification | The ongoing notification's text is updated to the server's latest status message |
+| Status notification | The ongoing notification shows one short line ("Truck about 8 min away · 2 stops before yours", "The truck is at your stop now!", "Garbage collected at your stop today ✓", "The truck skipped your stop today"…), with the full server message when expanded. Redrawn only when the line changes. Tapping it (or the alert notification) opens the app |
 | Shared state | `lastStatus` (read by `MainActivity` once a second for the UI) and `isRunning` |
 
 `MainActivity` doesn't poll the truck status itself: it mirrors
-`AlertService.lastStatus` every 1 s while visible. Its one network call is
-`GET /api/ping` every **10 s** while visible, for the **server indicator**
-(grey "Checking…", green "Server reachable", red "Server unreachable") on
-the register and status screens. That works before registering too. `BootReceiver` listens for
+`AlertService.lastStatus` every 1 s while visible. The **server indicator**
+uses `AlertService.lastPollOk` while the service runs; before registering
+(no service yet) the screen calls `GET /api/ping` every **2 s** itself, for the
+(grey "Connecting…", green "Server online", red "Server offline") on
+the register and home screens. That works before registering too. `BootReceiver` listens for
 `BOOT_COMPLETED` and starts the service if `registered` is true.
 
-No push service (e.g. Firebase) is involved; the phone polls. The trade-off is
-battery use and a permanent status-bar icon, in exchange for zero accounts.
+Alerts come from this polling: the app asks the server, so no push service
+or account is needed. It costs some battery and keeps a permanent
+status-bar notification.
 
 ### 6.5 Storage, permissions, networking
 
-- **SharedPreferences `resident_prefs`:** `registered`, `resident_id`
-  (a random UUID made on the app's first start by
-  `AppPrefs.createResidentIdIfMissing()`),
+- **SharedPreferences `resident_prefs`:** `registered`, `username`
+  (lowercased; checked by `AppPrefs.usernameProblem()` with the server's
+  rules; shown but locked on the Settings page),
   `truck_id`, `latitude`, `longitude`, `address`, `alert_minutes`,
   `last_alert_id`.
 - **Permissions:** `ACCESS_FINE/COARSE_LOCATION` (picker only),
@@ -377,7 +396,7 @@ battery use and a permanent status-bar icon, in exchange for zero accounts.
   `[lat, lng, unixTime]` line per location update. Kept out of db.json because
   it grows all day. Truck IDs are sanitised for filenames (anything other than
   letters, digits, `-`, `_` → `_`). Times are full precision because they're
-  compared against visit times (section 8.4).
+  compared against the times stops were collected (section 8.4).
 - **`data/admin_password.txt`:** generated admin password.
 - All of `data/` except `.gitkeep` is gitignored.
 
@@ -390,6 +409,7 @@ battery use and a permanent status-bar icon, in exchange for zero accounts.
       "lat": 12.97, "lng": 77.59,            // last reported position
       "timestamp": 1790000000000,            // phone's fix time (ms), as sent
       "lastSeen": 1790000000.5,              // server time of last update (s)
+      "sharing": true,                       // false after the driver pressed Stop
       "stops": [ {                           // ordered = collection order
         "id": "a1b2c3d4", "name": "Market gate", "lat": 12.97, "lng": 77.59,
         "addedBy": "driver",                 // or "admin"
@@ -410,12 +430,14 @@ battery use and a permanent status-bar icon, in exchange for zero accounts.
   },
   "runs": {
     "TRUCK-1|2026-09-26": { "truckId": "TRUCK-1", "date": "2026-09-26", "synthetic": false,
-                            "visits": { "a1b2c3d4": { "arrived": 1790000100.0, "left": 1790000280.0 } } }
+                            "visits": { "a1b2c3d4": { "collectedAt": 1790000280.0 } } },
+    "TRUCK-1|2026-09-25": { "truckId": "TRUCK-1", "date": "2026-09-25", "synthetic": true,
+                            "visits": { "a1b2c3d4": { "arrived": 1789913700.0, "left": 1789913880.0 } } }
   },
   "alerts": {
     "+919876543210|TRUCK-1|2026-09-26": { "message": "…", "sentAt": 1790000200.0 }
   },
-  "settings": { "stopRadiusMeters": 50, "secondsPerStop": 120, "routeRefreshMinutes": 2,
+  "settings": { "stopRadiusMeters": 30, "secondsPerStop": 120, "routeRefreshMinutes": 2,
                 "fallbackSpeedKmh": 20 }
 }
 ```
@@ -429,13 +451,16 @@ with no cleanup code.
 
 `POST /api/trucks/location`, all under `db.lock`:
 
-1. Create the truck if unknown.
-2. Store position, phone timestamp and `lastSeen = now`.
+1. 404 if the truck is unknown.
+2. Store position, phone timestamp, `lastSeen = now` and `sharing = true`.
 3. Append the point to today's track file.
-4. `record_position`: update visits, capture driven roads (sections 8.3–8.4).
-5. `check_alerts`: recompute every resident of this truck (section 8.8).
-6. Save db.json.
-7. Reply with the truck's stop list.
+4. `check_alerts`: recompute every resident of this truck (section 8.8).
+5. Save db.json.
+6. Reply with the truck's stops and today's status of each.
+
+`POST /api/trucks/collected` marks one stop collected (section 8.3), captures
+the road driven since the previous stop (8.4), runs `check_alerts`, saves and
+replies with the stops the same way.
 
 ---
 
@@ -455,27 +480,43 @@ d = 2 · R · asin(√a),   R = 6 371 000 m
 ### 8.2 Truck online / offline
 
 ```text
-active = truck has reported at least once  AND  now − lastSeen ≤ 120 s
+active = the truck has reported at least once
+         AND sharing                       (the driver hasn't pressed Stop)
+         AND now − lastSeen ≤ 10 s         (ACTIVE_SECONDS)
 ```
 
-### 8.3 Visits and dwell (collection time)
+The driver app sends a location every 2 s, so 10 s of silence means
+something is wrong: no internet, no GPS fix, the phone is off, or the app
+was killed. Pressing **Stop sharing location** makes the truck offline at
+once (`POST /api/trucks/stop-sharing`).
 
-On every update, for each stop *s* of the truck:
+### 8.3 Collected and skipped stops
+
+The driver decides when a stop is done: **Garbage collected** (shown within
+the collect-button radius, 30 m by default) → `POST /api/trucks/collected` →
 
 ```text
-if d(truck, s) ≤ stopRadiusMeters (default 50 m):
-    if s not visited in today's run:  visits[s] = { arrived: now, left: now }
-    visits[s].left = now                 # keeps moving forward while the truck stays
-dwell(s) = left − arrived
+today's run.visits[stop] = { collectedAt: now }
+```
+
+Nothing is guessed from where the truck stands or for how long. Today's
+status of each stop *i*:
+
+```text
+last = highest stop index collected today (−1 if none)
+collected  if stop i has a visit today
+skipped    if not, and i < last          (a later stop was collected first)
+next       if i == last + 1
+pending    otherwise
 ```
 
 ### 8.4 Capturing the road actually driven
 
-When the truck **first arrives** at stop *i > 0*, and stop *i−1* was visited
-earlier in the same run:
+When stop *i > 0* is collected and stop *i−1* was collected earlier in the
+same run:
 
 ```text
-points = GPS track points with  left(i−1) < t < arrived(i)
+points = GPS track points with  collectedAt(i−1) < t < collectedAt(i)
 if points is not empty:
     stops[i−1].driven = [stop(i−1)] + points + [stop(i)]
 ```
@@ -485,7 +526,7 @@ From then on that leg is drawn along the real roads the truck took.
 ### 8.5 Progress within today's round
 
 ```text
-last = highest stop index visited today            (−1 if none)
+last = highest stop index collected today            (−1 if none)
 at   = index of the stop within stopRadius of the truck right now, or None
 ```
 
@@ -499,17 +540,21 @@ The status message includes that stop's name and distance from the house.
 
 ### 8.7 History-derived values
 
-Using only **past** days' runs (today's may be incomplete), real and synthetic:
+Using only **past** days' runs (today's may be incomplete):
 
 ```text
-typical_dwell(s) = median( left − arrived  over past visits with left > arrived )
+typical_dwell(s) = median stoppage time ( left − arrived ) over past visits that
+                   have arrival and departure times (demo history, for now)
                    or secondsPerStop (default 120 s) if there are none
 
-usual_time(s)    = median( time-of-day of arrived, in seconds since midnight )  →  "HH:MM"
+usual_time(s)    = median time of day the stop was reached (arrived, or
+                   collectedAt for real rounds), in seconds since midnight  →  "HH:MM"
 ```
 
-History affects **only** the per-stop dwell and the "usually around HH:MM"
-hint. Past *drive* times are deliberately not used.
+Real rounds record only when a stop was collected, not how long the truck
+stood there, so stoppage times come from demo history for now.
+History affects **only** the per-stop stoppage time and the "usually around HH:MM"
+hint. Drive time always comes from the road route (OSRM), never from history.
 
 ### 8.8 Status and ETA
 
@@ -519,9 +564,10 @@ Decision order for a resident (truck T, collection point k):
 |---|---|
 | T doesn't exist | `unknown_truck` |
 | T has no stops | `no_stops` |
+| stop k collected today | `collected` |
+| stop k skipped today | `skipped` |
 | T not active (8.2) | `truck_offline` (with "usually around HH:MM" if known) |
 | `at == k` | `at_stop`, ETA 0 |
-| `k ≤ last` | `collected` |
 | otherwise | `on_the_way` |
 
 For `on_the_way`, with `n = last + 1` (the next stop the truck will reach):
@@ -540,7 +586,9 @@ ETA_seconds = D + C
           if cached OSRM leg:           leg.seconds
           else:                         d(stop i−1, stop i) ÷ v_fallback       ← rough
 
-  C (collecting) = Σ typical_dwell(stop i)  for i = n … k−1
+  C (stoppages)  = Σ typical_dwell(stop i)  for i = n … k−1
+                   (a stop's time only drops out once the driver marks it
+                   collected, so a truck still parked there keeps it counted)
 
 ETA_minutes = max(1, ⌈ETA_seconds ÷ 60⌉)
 v_fallback  = fallbackSpeedKmh × 1000 ÷ 3600   (default 20 km/h ≈ 5.56 m/s)
@@ -594,8 +642,16 @@ So it refreshes every 2 minutes by default, and immediately after the truck
 reaches a new stop. One request per truck, shared by all its residents.
 
 **Failure handling:** an OSRM error sets the truck's `routingError` (shown in
-the admin Alerts panel) and **backs off that truck for 120 s**. Success clears
-the error.
+the admin Alerts panel) and **backs off that truck for 30 s**. The error
+clears on the next success, straight away when the truck's stops are saved
+or a driver adds a stop (those also end the back-off, so the new stops are
+routed within 10 s), and at every server start (a saved error describes the
+previous run).
+
+**At server start** everything is read back from `db.json`: trucks and their
+last positions, stops, cached OSRM roads and driven roads, history,
+residents and settings. The routing loop runs once immediately, so any leg
+still missing a road is fetched within seconds.
 
 ### 8.10 OSRM, Nominatim and Photon clients (`osm.py`)
 
@@ -624,7 +680,7 @@ After every location update of truck T, for every resident with
 ```text
 status = resident_status(resident)
 if status ∈ {on_the_way, at_stop}  and  etaMinutes ≤ alertMinutes:
-    key = "<residentId>|<truckId>|<date>"
+    key = "<username>|<truckId>|<date>"
     if key not in alerts:
         alerts[key] = { message, sentAt: now }
 ```
@@ -644,8 +700,9 @@ for each day d = 1 … 14 days ago:
     t = 07:00 local on that day + Uniform(−600, +600) s
     for each stop i in order:
         if i > 0:  t += (OSRM leg seconds, or 300 s if none) × Uniform(0.9, 1.5)
-        dwell = base_dwell(s_i) × Uniform(0.7, 1.3)
-        visit = { arrived: t, left: t + dwell };   t += dwell
+        stoppage = base_dwell(s_i) × Uniform(0.7, 1.3)
+        visit = { arrived: t, left: t + stoppage };   t += stoppage
+        # arrival time, departure time; departure − arrival = stoppage time
 ```
 
 This gives every stop a consistent but noisy typical dwell and arrival time,
@@ -654,14 +711,17 @@ so ETAs and "usually around" hints work before any real history exists.
 
 ### 8.13 Small rules
 
-- **Resident IDs:** made by the app (UUID). The server keeps only letters,
-  digits, `-` and `_`, at most 64 characters.
+- **Usernames:** trimmed and lowercased; 3–30 characters of letters,
+  digits, `.`, `_`, `-` (400 otherwise).
 - **New ids:** `secrets.token_hex(4)` (8 hex characters) for stops.
 - **Admin password:** `secrets.token_urlsafe(9)` generated on the first run
   into `data/admin_password.txt` (edit the file to change it). Compared with `hmac.compare_digest`
   (constant-time).
 - **Numbers:** booleans are rejected where numbers are expected (Python
   treats `True` as `1`).
+- **Positions:** every latitude must be −90…90 and longitude −180…180 (400
+  otherwise). The admin map wraps clicks on its repeated side copies of the
+  world back into that range, and does the same to stops when saving them.
 
 ---
 
@@ -680,28 +740,45 @@ search provider failed.
 { "truckId": "TRUCK-1", "latitude": 12.9716, "longitude": 77.5946, "timestamp": 1790000000000 }
 ```
 → `{"ok": true, "stops": [{"name": "Stop 1", "latitude": 12.97, "longitude": 77.59}, …]}`
-Requires `truckId` and numeric coordinates (400 otherwise). Creates the truck
-if new. Side effects: section 7.4.
+Requires `truckId` and numeric coordinates (400 otherwise); **404** for an
+unknown truck. Side effects: section 7.4.
+
+**`GET /api/trucks?truckId=…`**
+→ `{"ok": true, "stops": [...]}`, or **404** for an unknown truck. The driver
+app checks its Truck ID with this before it starts tracking.
 
 **`POST /api/trucks/stops`**
 
 ```json
 { "truckId": "TRUCK-1", "latitude": 12.9716, "longitude": 77.5946 }
 ```
-→ same shape as above, including the new `"Stop N"` at the end.
+→ same shape as above, including the new `"Stop N"` at the end (404 for an unknown truck).
+
+Every driver response also carries `collectRadiusMeters` (the admin
+`stopRadiusMeters` setting). In it, each stop is
+`{"id", "name", "latitude", "longitude", "status"}` with `status` =
+`collected` / `skipped` / `next` / `pending` (section 8.3).
+
+**`POST /api/trucks/collected`** `{"truckId", "stopId"}` → the stops, as
+above. The driver pressed **Garbage collected** at that stop. 404 for an
+unknown truck, 400 for a stop that isn't on it.
+
+**`POST /api/trucks/stop-sharing`** `{"truckId"}` → `{"ok": true}`. The
+driver pressed **Stop sharing location**: the truck is offline at once.
 
 ### 9.2 Resident app
 
 **`POST /api/residents/register`**
 
 ```json
-{ "residentId": "3f2b8c1e-6a4d-4e0f-9b7a-2c5d8e1f0a93", "truckId": "TRUCK-1",
+{ "username": "asha", "truckId": "TRUCK-1",
   "latitude": 12.9716, "longitude": 77.5946, "alertMinutes": 10, "address": "12 MG Road" }
 ```
-→ `{"ok": true}`, or **404** `{"error": "unknown truck"}`. Upsert keyed on
-`residentId`; `address` optional. Keeps any admin-set `name`.
+→ `{"ok": true}`, or **404** `{"error": "unknown truck"}`. Upsert keyed on the
+username (so the same username never makes a duplicate); `address` optional;
+`alertMinutes` must be 1–120 (400 otherwise).
 
-**`GET /api/residents/status?id=…`**
+**`GET /api/residents/status?username=…`**
 
 ```json
 {
@@ -712,13 +789,14 @@ if new. Side effects: section 7.4.
   "etaMinutes": 6, "etaIsRough": false, "stopsAway": 2, "usualTime": "07:40",
   "path": [ { "latitude": 12.9716, "longitude": 77.5946 }, … ],
   "runId": "TRUCK-1|2026-09-26",
-  "stops": [ { "name": "Stop 1", "latitude": 12.97, "longitude": 77.59 }, … ],
+  "stops": [ { "name": "Stop 1", "latitude": 12.97, "longitude": 77.59, "status": "collected" }, … ],
   "stopIndex": 2,
-  "alert": { "id": "3f2b8c1e-…|TRUCK-1|2026-09-26", "message": "…" }
+  "alert": { "id": "asha|TRUCK-1|2026-09-26", "message": "…" }
 }
 ```
-Fields that don't apply are `null` / `[]`. **404** if the resident ID isn't
-registered (the app then re-registers). `status` values: section 8.8.
+Fields that don't apply are `null` / `[]`. **404** if the username isn't
+registered (the app then re-registers). `status` values: section 8.8
+(including `skipped`). Each stop's `status` is today's (section 8.3).
 
 **`GET /api/places/search?query=…`**
 → `{"results": [{"name": "…", "latitude": …, "longitude": …}]}` (≤ 5, Nominatim).
@@ -738,14 +816,15 @@ admin Alerts).
 |---|---|---|
 | `GET /admin` | — | The admin page (`/admin/admin.js`, `/admin/admin.css` likewise, `Cache-Control: no-store`) |
 | `GET /` | — | 302 → `/admin` |
-| `GET /api/admin/state` | — | `{alerts, trucks, residents, settings}`: trucks with stops (road points + source, typical dwell, usual time, added by), last update age, active, stops reached today, real/demo run counts, approach age, routing error; residents with truck, collection point + distance, live status message |
+| `GET /api/admin/state` | — | `{alerts, trucks, residents, settings}`: trucks with stops (road points + source, typical stoppage, usual time, added by, today's status), last update age, active, stops collected today, real/demo run counts, approach age, routing error; residents with truck, collection point + distance, live status message |
 | `POST /api/admin/trucks` | `{id}` | Create a truck |
 | `DELETE /api/admin/trucks?id=` | | Delete a truck and its stops |
 | `POST /api/admin/trucks/stops` | `{truckId, stops: [{id?, name, lat, lng}]}` | Replace the stop list. Stops keeping their id keep their road data; missing ids are generated; missing names become "Stop N" |
 | `POST /api/admin/trucks/demo-history` | `{truckId, action: "generate" \| "clear"}` | → `{runs: N}`. Generate needs at least one stop |
 | `GET /api/admin/track?truckId=&date=` | date defaults to today | `{points: [[lat, lng], …]}` from the track file |
-| `POST /api/admin/residents` | as register (with an existing `residentId`), plus an optional `name` label | **Edit** a resident → `{id}`. Residents register only in the app: an unknown `residentId` is refused (400), as is an unknown truck |
-| `DELETE /api/admin/residents?id=` | | Delete a resident |
+| `GET /api/admin/history?truckId=` | | `{truckId, stops: [{name, usualTime, typicalDwellSeconds}], days: [{date, synthetic, today, visits: [{collectedAt} (real) or {arrived, left} (demo) or null, per current stop]}]}`, newest day first. 400 for an unknown truck |
+| `POST /api/admin/residents` | as register (with an existing `username`) | **Edit** a resident → `{username}`. Residents register only in the app: an unknown username is refused (400), as is an unknown truck |
+| `DELETE /api/admin/residents?username=` | | Delete a resident |
 | `POST /api/admin/settings` | any settings | Numeric settings must be positive (400 otherwise) |
 
 ---
@@ -754,15 +833,16 @@ admin Alerts).
 
 Open `/admin` locally or through the ngrok URL; log in as `admin` with the
 password printed at startup. The page re-fetches `/api/admin/state` **every
-5 s** and redraws.
+2 s** and redraws.
 
 | Section | What it does |
 |---|---|
 | **Alerts** | Current problems: OSRM failures per truck (ETAs then rough), Nominatim/Photon failures within the last hour. Green "all good" otherwise |
-| **Map** (Leaflet + OSM) | **Each truck has its own colour** (8-colour palette, by truck order), used for its truck icon (inline SVG truck on a coloured circle, label "ID · 12s ago" underneath; grey when offline; always drawn above stops), its numbered stops (circles, in collection order; the open truck's are outlined) and its roads between stops. Residents: small dark dots (tooltip with live status). Optional grey line: the open truck's GPS track today. On first load it frames **all trucks** (their stops if none has reported yet). Only what's on screen (plus a 20 % margin) is drawn, redrawn after every pan/zoom |
-| **Trucks** | Heading shows **N online · M offline**. Per truck: ID (⚠ on routing error), a green **● Online** / grey **● Offline** pill (online = sent a location within the last 2 min) with "last location 12s ago" (or "never sent a location"), stop count, "reached stop X of Y" today, road-to-next-stop age, real/demo history days, **Edit stops**, Delete, Add truck |
+| **Map** (Leaflet + OSM) | **Each truck has its own colour** (8-colour palette, by truck order), used for its truck icon (inline SVG truck on a coloured circle, label "ID · 12s ago" underneath; grey when offline; always drawn above stops), its stops and its roads between stops. **Stops:** a white bin on a circle in the truck's colour, with a number bubble (collection order) at the top right and a status bubble at the top left: green ✓ collected today, yellow ! skipped today (the open truck's stops are outlined). **Residents:** a white person symbol on a dark circle (tooltip with live status). Optional grey line: the open truck's GPS track today. On first load it frames **all trucks** (their stops if none has reported yet). Only what's on screen (plus a 20 % margin) is drawn, redrawn after every pan/zoom |
+| **Trucks** | Heading shows **N online · M offline**. Per truck: ID (⚠ on routing error), a green **● Online** / grey **● Offline** pill (online = sharing, with a location within the last 10 s; offline straight away when the driver presses Stop, or after 10 s without a location for any other reason) with "last location 12s ago" (or "never sent a location"), stop count, "collected X of Y" today, road-to-next-stop age, real/demo history days, **Edit stops**, Delete, Add truck. **Clicking a truck's ID** opens its collection history (below) |
+| **Collection history** | One row per day (newest first, tagged *today* / *real* / *demo*), one column per stop. Demo days: arrival → departure and "stopped N min". Real days: "✓ HH:MM collected". Otherwise "⚠ skipped" (a later stop was collected) or "—". Then "stops collected X of Y" and the round's first – last time with its total length. A first **Usually** row shows each stop's usual arrival time and typical stoppage. Refreshes with the page every 2 s, so today's round fills in live |
 | **Stop editor** | Rename, ↑↓ reorder, ✕ remove, **Add stops by clicking the map**, Save, Discard. Shows each stop's usual time, typical collecting time, whether a driver added it, and whether its road is "as driven" or "shortest route". Stops the driver adds appear live **unless** there are unsaved edits (saving replaces the whole list). **Show roads driven today**, **Generate / Clear demo history** |
-| **Residents** | Everyone registered in the app, with truck, collection point + distance, alert threshold and live status. **Edit** opens a form (optional name label, truck, address, house, which can be picked on the map, alert threshold); **Delete**. No adding: residents register themselves in the app |
+| **Residents** | Everyone registered in the app, with truck, collection point + distance, alert threshold and live status. **Edit** opens a form (truck, address, house, which can be picked on the map, alert threshold); **Delete**. No adding: residents register themselves in the app |
 | **Settings** | The four settings in section 11.1 |
 
 Everything user-supplied is HTML-escaped before display. Map clicks pass
@@ -776,8 +856,8 @@ through lines (non-interactive) so stops can be added on top of roads.
 
 | Setting | Default | Used in |
 |---|---|---|
-| `stopRadiusMeters` | 50 m | Visit detection, "at stop", progress (8.3, 8.5) |
-| `secondsPerStop` | 120 s | Dwell for stops with no history (8.7) |
+| `stopRadiusMeters` | 30 m | **Collect-button radius:** within it, the driver app shows **Garbage collected** (sent to the app with every stop list as `collectRadiusMeters`), and residents see "the truck is at your stop" (8.5). It never marks a stop collected by itself |
+| `secondsPerStop` | 120 s | Stoppage time for stops with no history (8.7) |
 | `routeRefreshMinutes` | 2 min | Approach refresh interval; freshness window is 2× this (8.8, 8.9) |
 | `fallbackSpeedKmh` | 20 km/h | Rough drive time when OSRM is unavailable (8.8) |
 
@@ -785,22 +865,23 @@ through lines (non-interactive) so stops can be added on top of roads.
 
 | Constant | Value | Where |
 |---|---|---|
-| Driver GPS/upload interval | 10 s | `LocationService.UPDATE_INTERVAL_MS` |
+| Driver GPS/upload interval | 2 s | `LocationService.UPDATE_INTERVAL_MS` |
+| Server pill ping (apps, when not otherwise talking to the server) | 2 s | `PING_INTERVAL_MS` |
 | Network-fix suppression window | 20 s (2 × interval) | `LocationService` |
 | Add-stop undo window | 20 s | driver `MainActivity.ADD_STOP_DELAY_MS` |
 | Driver UI refresh | 1 s | driver `MainActivity` |
-| Resident status polling | 15 s | `AlertService.POLL_INTERVAL_MS` |
+| Resident status polling | 2 s | `AlertService.POLL_INTERVAL_MS` |
 | Resident UI refresh | 1 s | resident `MainActivity.UI_REFRESH_MS` |
-| Truck offline after | 120 s | `eta.ACTIVE_SECONDS` |
-| Routing loop | every 10 s | `routing.updater` |
+| Truck offline after | 10 s without a location (or at once on Stop) | `eta.ACTIVE_SECONDS` |
+| Routing loop | at start, then every 10 s | `routing.updater` |
 | OSRM batch size | 12 stops | `routing.STATIC_CHUNK` |
-| OSRM error back-off | 120 s per truck | `routing.RETRY_AFTER_ERROR_SECONDS` |
+| OSRM error back-off | 30 s per truck (cleared early when its stops change) | `routing.RETRY_AFTER_ERROR_SECONDS` |
 | External request spacing | ≥ 1 s | `osm._get_json` |
 | External request timeout | 15 s | `osm._get_json` |
 | Search cache limit | 500 entries | `osm.search` |
 | Demo history | 14 days, start 07:00 ± 10 min | `eta.generate_demo_history` |
 | Demo spacing without a road | 300 s | `eta.DEMO_SECONDS_BETWEEN_STOPS` |
-| Admin panel refresh | 5 s | `admin.js REFRESH_MS` |
+| Admin panel refresh | 2 s | `admin.js REFRESH_MS` |
 | Search error shown in Alerts for | 1 h | `server.system_alerts` |
 | Picker settle delay / zoom | 400 ms / 17 | `LocationPickerScreen` |
 | Home map zoom / fit padding | 16 / 160 px | `HomeScreen` |
@@ -820,7 +901,7 @@ through lines (non-interactive) so stops can be added on top of roads.
 - **Cleartext:** both apps set `usesCleartextTraffic="true"` only so plain
   `http://` works for emulator/LAN testing; the ngrok URL is HTTPS.
 - **Input handling:** JSON bodies must be objects, numbers are type-checked,
-  resident IDs are cleaned; the admin page escapes all user text.
+  usernames are validated; the admin page escapes all user text.
 - **Secrets in git:** `data/` (db, password, tracks) and `local.properties`
   are gitignored.
 
@@ -849,22 +930,23 @@ restarts, so the apps' `BASE_URL` is set once. It's currently
 
 ### 14.1 Truck simulator (`server/simulate.py`)
 
-Drives a pretend truck through its stops by sending the same location
-updates the driver app sends:
+Drives a pretend truck through its stops by sending the same requests the
+driver app sends: a location every 2 s, **Garbage collected** at each stop,
+and **Stop sharing** at the end:
 
 ```text
-python simulate.py TRUCK-1          # an update every 10 s (real pace)
-python simulate.py TRUCK-1 --fast   # an update every 1 s
+python simulate.py TRUCK-1          # real pace: 8 m every 2 s (~15 km/h)
+python simulate.py TRUCK-1 --fast   # 80 m every 2 s
 ```
 
 - Reads the truck's stops from `data/db.json` (the truck must have stops).
-- Between stops it follows the known road (driven, else OSRM); it moves in
-  **40 m** steps, skipping road points closer than one step. With no known
+- Between stops it follows the known road (driven, else OSRM), skipping
+  road points closer than one step. With no known
   road for a leg it **jumps** to the next stop instead of inventing a path.
-- Parks at each stop for **3 updates** (so visits and dwell get recorded).
+- Parks at each stop for **10 updates**, then presses **Garbage collected**.
 - Posts to `127.0.0.1` rather than `localhost`, because on Windows
   `localhost` tries IPv6 first and stalls about 2 s per request.
-- `--fast` records real (compressed) history, so use a test truck with it.
+- It records a real round for today, so use a test truck with it (not the one you'll demo that day).
 
 ### 14.2 Demo history
 
@@ -890,7 +972,7 @@ is made up or fetched by the system.
 | Data | Where it comes from | What you do |
 |---|---|---|
 | Road between stops | OSRM, fetched automatically within about 10 s of saving (section 8.9) | Nothing (needs internet) |
-| Collection time per stop, "usually there around 07:40" | **Generate demo history**: 14 fake past days, each stop with its own typical 1–5 min | Click it once, *after* the roads appear on the map, so the fake times use real drive times |
+| Stoppage time per stop, "usually there around 07:40" | **Generate demo history**: 14 fake past days with each stop's arrival and departure times (each stop with its own typical 1–5 min stop) | Click it once, *after* the roads appear on the map, so the fake times use real drive times |
 | Truck's live position | `python simulate.py TRUCK-1 --fast` (14.1), or the real driver app | Run one of them |
 | Residents | The resident app, or the admin form's **Pick house on map** | Add 2–3, with houses near different stops so they get different ETAs and alerts |
 
@@ -899,47 +981,43 @@ is made up or fetched by the system.
 - 1 truck with 5–6 stops, demo history generated.
 - 3 residents: one near stop 2, one near stop 4 and one near the last stop,
   with different alert times (5, 10 and 15 min).
-- Run the simulator and watch the ETAs count down, stops get marked
-  visited, and alerts fire one after another.
+- Run the simulator (or drive with the driver app, pressing **Garbage
+  collected** at each stop) and watch the ETAs count down, stops get a ✓,
+  and alerts fire one after another.
 
 **Cautions:**
 
-- `simulate.py --fast` records *real* visit history, just squeezed into
-  minutes. Use a throwaway truck like `TEST-1` for it, or the "usually
-  there" times of your real demo truck get skewed.
+- A round (simulated or real) counts as that truck's round for the day:
+  its stops stay collected until midnight, and each resident gets one alert
+  per truck per day. Rehearse with a separate truck like `REHEARSAL-1`.
 - **Clear demo history** removes only the fake days. Real history from the
   driver app or the simulator stays. To start completely fresh, stop the
   server and delete `server/data/db.json`.
 
 ---
 
-## 15. Limitations and deliberate omissions
+## 15. Limitations
 
-| Not included | Why / what instead |
+| Limitation | What it means |
 |---|---|
-| Live traffic | Every provider charges. Drive time uses OSRM's normal road time, refreshed from the truck's actual position |
-| SMS alerts | Cost money (e.g. Twilio). Alerts are app notifications only, so residents without the app get none |
-| Push notifications (Firebase) | Avoided to need no accounts. `AlertService` polls instead: works with the app closed, but uses more battery and shows a permanent status-bar icon |
-| Automatic truck selection | Residents enter their Truck ID; their stop is the nearest on that truck |
-| Authentication for apps | Open endpoints (section 12) |
-| Scale | One JSON file rewritten on each change, public OSRM/Nominatim servers: fine for a few trucks and residents, not for a city |
-| Aggressive phone brands | Some (Xiaomi, Oppo, Vivo, …) kill background services unless the app's battery setting is "Unrestricted" |
+| Normal road times | Drive times are OSRM's usual road times, refreshed from the truck's real position; there's no live traffic data |
+| Alerts need the app | Alerts are app notifications, so a resident needs the resident app installed and registered |
+| Background polling | The resident app keeps a status-bar notification and checks the server every 2 s, which uses some battery and data |
+| Request volume | The apps make one request every 2 s each (driver: its location; resident: its status). Through ngrok's free plan, which has a monthly request limit, long sessions can use it up. The rates are single constants (section 11.2) |
+| Open app endpoints | The apps don't log in (section 12): anyone who knows a Truck ID can post locations for it |
+| Scale | One JSON file rewritten on each change, and the public OSRM/Nominatim/Photon servers: fine for a few trucks and residents, not a whole city |
+| Aggressive phone brands | Some (Xiaomi, Oppo, Vivo, Samsung, …) stop background apps unless the app's battery setting is "Unrestricted" (SETUP.md section 9) |
 
 ---
 
-## 16. How it was tested
+## 16. Checking your changes
 
-- **Both apps** build with `gradlew assembleDebug` with no compiler warnings.
-  They have not been run on a real phone from this environment (see
-  [TODO_FOR_YOU.md](TODO_FOR_YOU.md)).
-- **Server logic** was tested end to end with a scripted scenario (fake and
-  real OSRM): registration (including unknown truck and missing fields), ETA
-  counting down as the truck moves, driven-road capture, `at_stop` and
-  `collected`, one alert per round, demo history generate/clear, driver
-  add-stop, GPS track retrieval, OSRM failure → Alerts panel + rough
-  estimate, and admin auth (401 without password).
-- **Real services:** a live OSRM route and Nominatim search were exercised
-  through the server code, including a simulated truck driving real
-  Bengaluru roads with a non-rough, counting-down ETA.
-- The admin JavaScript was syntax-checked with `node --check`; all Python
-  files compile.
+- **Server:** `python -m py_compile *.py` in `server/` catches syntax errors;
+  run the server and use the admin panel, or drive a pretend truck with
+  `python simulate.py <TRUCK-ID>` (section 14).
+- **Admin panel:** `node --check admin/admin.js` checks the JavaScript.
+- **Apps:** `gradlew assembleDebug` in each app folder (no warnings
+  expected), then install on a phone or the emulator (SETUP.md sections 9
+  and 11). On the emulator, move the "phone" along a road with
+  **Extended controls → Location** (or `adb emu geo fix <lng> <lat>`) to
+  test the driver app and the resident alerts.

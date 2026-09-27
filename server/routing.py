@@ -1,5 +1,5 @@
 """Background thread that gets driving routes from OSRM (osm.py), the free
-OpenStreetMap routing service (AGENTS.md sections 8, 10).
+OpenStreetMap routing service (CLAUDE.md sections 8, 10).
 
 Two jobs:
 
@@ -27,9 +27,28 @@ import osm
 # Stops per request: the public server handles far more, but small batches
 # stay well within its fair-use limits.
 STATIC_CHUNK = 12
-RETRY_AFTER_ERROR_SECONDS = 120
+RETRY_AFTER_ERROR_SECONDS = 30
 
 _last_error_at = {}  # truck_id -> time of its last failed request, to back off
+
+
+def clear_old_errors():
+    """At server start: route errors saved from the last run describe that
+    run, not this one. Clear them; a real problem shows up again on the
+    first request (within 10 s)."""
+    with db.lock:
+        for truck in db.data["trucks"].values():
+            truck["routingError"] = None
+        db.save()
+
+
+def stops_changed(truck_id, truck):
+    """The truck's stops were just edited: forget its last route-server
+    error, so the new stops are routed on the next loop (within 10 s)
+    rather than after the RETRY_AFTER_ERROR_SECONDS wait. Caller holds
+    db.lock."""
+    _last_error_at.pop(truck_id, None)
+    truck["routingError"] = None
 
 
 def static_jobs(truck_id, truck):
@@ -131,10 +150,11 @@ def run_approach(job):
 
 
 def updater():
-    """Runs forever on a background thread."""
+    """Runs forever on a background thread: once straight away (so missing
+    roads load as soon as the server starts), then every 10 s."""
     while True:
-        time.sleep(10)
         update_once()
+        time.sleep(10)
 
 
 def update_once():

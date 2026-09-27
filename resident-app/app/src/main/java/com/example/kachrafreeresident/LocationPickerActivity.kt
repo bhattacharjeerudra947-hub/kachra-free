@@ -216,7 +216,8 @@ class LocationPickerActivity : ComponentActivity() {
     }
 
     private fun hideKeyboard() {
-        val view = currentFocus ?: return
+        val view = currentFocus
+        if (view == null) return
         getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(view.windowToken, 0)
         view.clearFocus()
     }
@@ -319,11 +320,10 @@ class LocationPickerActivity : ComponentActivity() {
     }
 
     private fun confirmSelection(latLng: GeoPoint) {
-        val result = Intent().apply {
-            putExtra(EXTRA_RESULT_LATITUDE, latLng.latitude)
-            putExtra(EXTRA_RESULT_LONGITUDE, latLng.longitude)
-            putExtra(EXTRA_RESULT_ADDRESS, pickedAddress)
-        }
+        val result = Intent()
+        result.putExtra(EXTRA_RESULT_LATITUDE, latLng.latitude)
+        result.putExtra(EXTRA_RESULT_LONGITUDE, latLng.longitude)
+        result.putExtra(EXTRA_RESULT_ADDRESS, pickedAddress)
         setResult(Activity.RESULT_OK, result)
         finish()
     }

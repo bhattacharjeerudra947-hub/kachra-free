@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -35,7 +36,9 @@ class LocationService : Service() {
 
         // How often we ask for a location fix, and so how often one is sent
         // to the server. minDistance is 0, so a parked truck still reports.
-        private const val UPDATE_INTERVAL_MS = 10_000L
+        // (Each update is one request: through ngrok's free plan, keep this
+        // from getting much faster.)
+        private const val UPDATE_INTERVAL_MS = 2_000L
 
         // MainActivity reads these once a second to show the live state.
         // They only live in memory: after the process dies they reset,
@@ -76,6 +79,12 @@ class LocationService : Service() {
 
     private var truckId = ""
     private var lastGpsFixAtElapsedMillis = 0L
+
+    // true while a location upload is on its way. A fix that arrives
+    // meanwhile is skipped (the next one is only 2 s away), so a slow
+    // network can't pile up requests.
+    @Volatile
+    private var uploading = false
 
     private val locationListener = object : LocationListener {
 
@@ -183,6 +192,13 @@ class LocationService : Service() {
         } catch (_: Exception) {
         }
 
+        // Tell the server straight away, so the truck shows offline now
+        // rather than after its 10 s timeout.
+        val id = truckId
+        if (id.isNotBlank()) {
+            Thread { ServerApi.stopSharing(id) }.start()
+        }
+
         prefs.edit().putBoolean(AppPrefs.KEY_TRACKING, false).apply()
 
         clearLiveState()
@@ -212,10 +228,12 @@ class LocationService : Service() {
         )
 
         val id = truckId
+        if (uploading) return
+        uploading = true
 
-        // One small request every 10 seconds: a plain background thread is
+        // One small request every 2 seconds: a plain background thread is
         // enough. A failed upload (no signal, server down) is simply dropped;
-        // the next fix comes 10 seconds later.
+        // the next fix comes 2 seconds later.
         Thread {
             val stops = ServerApi.sendLocation(id, location.latitude, location.longitude, location.time)
             val ok = stops != null
@@ -229,6 +247,7 @@ class LocationService : Service() {
             updateNotification(
                 if (ok) "Truck $id - sharing location" else "Truck $id - server unreachable, retrying"
             )
+            uploading = false
         }.start()
     }
 
@@ -255,11 +274,17 @@ class LocationService : Service() {
     }
 
     private fun createNotification(text: String): Notification {
+        // Tapping the notification opens the app.
+        val openApp = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+        )
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Kachra Free Driver")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setContentIntent(openApp)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .build()
     }
 

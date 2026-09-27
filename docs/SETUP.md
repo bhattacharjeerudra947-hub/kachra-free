@@ -362,6 +362,12 @@ Builds and installs it on the connected phone in one step — the normal
 command to use after a code change. It reinstalls over the existing app
 without erasing its saved registration/Truck ID.
 
+On a real phone, set each app's battery setting so Android doesn't stop it
+in the background: **Settings → Apps → Kachra Free Driver / Resident →
+Battery → Unrestricted** ("No restrictions" on some brands). Xiaomi, Oppo,
+Vivo and Samsung phones in particular stop background tracking and alerts
+otherwise.
+
 Same for the other app:
 
 ```cmd

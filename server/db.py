@@ -22,8 +22,10 @@ TRACKS_DIR = os.path.join(DATA_DIR, "tracks")
 # Settings for a new database. After that they live in db.json and are
 # changed from the admin panel.
 DEFAULT_SETTINGS = {
-    # A truck within this distance of a stop is "at" that stop.
-    "stopRadiusMeters": 50,
+    # Within this distance of a stop, the driver app shows the "Garbage
+    # collected" button, and residents see "the truck is at your stop".
+    # It never marks a stop collected by itself: only the button does.
+    "stopRadiusMeters": 30,
     # Time spent collecting at a stop, used until that stop has history.
     "secondsPerStop": 120,
     # How often to re-ask the route server for the road from each moving

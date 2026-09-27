@@ -36,13 +36,20 @@ class AlertService : Service() {
         private const val WATCH_NOTIFICATION_ID = 2001
 
         // How often to ask the server for a fresh status while this service
-        // runs, whether or not the app's screen is open.
-        private const val POLL_INTERVAL_MS = 15_000L
+        // runs, whether or not the app's screen is open. (Each one is a
+        // request: through ngrok's free plan, keep this from getting much
+        // faster.)
+        private const val POLL_INTERVAL_MS = 2_000L
 
-        // MainActivity reads this once a second to show live status without
+        // MainActivity reads these every second to show live status without
         // running its own separate network polling.
         @Volatile
         var lastStatus: ServerApi.TruckStatus? = null
+            private set
+
+        // Did the last poll reach the server? null before the first one.
+        @Volatile
+        var lastPollOk: Boolean? = null
             private set
 
         @Volatile
@@ -52,6 +59,14 @@ class AlertService : Service() {
 
     private lateinit var prefs: SharedPreferences
     private val handler = Handler(Looper.getMainLooper())
+
+    // true while a poll is waiting for the server; the next one is skipped
+    // until it finishes, so a slow network can't pile up requests.
+    @Volatile
+    private var polling = false
+
+    // The ongoing notification's current text, so it's only redrawn when it changes.
+    private var watchText = ""
 
     private val pollRunnable = object : Runnable {
         override fun run() {
@@ -106,6 +121,7 @@ class AlertService : Service() {
         handler.removeCallbacks(pollRunnable)
         isRunning = false
         lastStatus = null
+        lastPollOk = null
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -118,6 +134,8 @@ class AlertService : Service() {
     /** Runs on the main thread; the actual network call happens on a background thread. */
     private fun poll() {
         val username = prefs.getString(AppPrefs.KEY_USERNAME, "").orEmpty()
+        if (polling) return
+        polling = true
 
         Thread {
             var status = ServerApi.fetchStatus(username)
@@ -129,11 +147,13 @@ class AlertService : Service() {
             }
 
             lastStatus = status
+            lastPollOk = status != null
             if (status != null) {
                 updateWatchNotification(status)
                 val alert = status.alert
                 if (alert != null) showAlertNotification(alert)
             }
+            polling = false
         }.start()
     }
 
@@ -188,23 +208,49 @@ class AlertService : Service() {
         manager.createNotificationChannel(alertChannel)
     }
 
-    private fun createWatchNotification(text: String): Notification {
+    /** text: one short line. details: the full message, shown when expanded. */
+    private fun createWatchNotification(text: String, details: String = text): Notification {
+        // Tapping the notification opens the app.
+        val openApp = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+        )
         return Notification.Builder(this, WATCH_CHANNEL_ID)
             .setContentTitle("Kachra Free Resident")
             .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(details))
             .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentIntent(openApp)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .build()
     }
 
     private fun updateWatchNotification(status: ServerApi.TruckStatus) {
-        var text = "Watching for garbage truck alerts..."
-        if (status.notRegistered) {
-            text = "Sending your registration to the server..."
-        } else if (status.message != null) {
-            text = status.message
+        val text = shortStatus(status)
+        if (text == watchText) return // nothing new to show
+        watchText = text
+        val details = status.message ?: text
+        getSystemService(NotificationManager::class.java)
+            .notify(WATCH_NOTIFICATION_ID, createWatchNotification(text, details))
+    }
+
+    /** One line for the ongoing notification, e.g. "Truck about 8 min away · 2 stops before yours". */
+    private fun shortStatus(status: ServerApi.TruckStatus): String {
+        if (status.notRegistered) return "Sending your registration to the server..."
+        when (status.status) {
+            "on_the_way" -> {
+                val stopsAway = status.stopsAway ?: 0
+                var before = "your stop is next"
+                if (stopsAway == 1) before = "1 stop before yours"
+                if (stopsAway > 1) before = "$stopsAway stops before yours"
+                return "Truck about ${status.etaMinutes} min away · $before"
+            }
+            "at_stop" -> return "The truck is at your stop now!"
+            "collected" -> return "Garbage collected at your stop today ✓"
+            "skipped" -> return "The truck skipped your stop today"
+            "truck_offline" -> return "The truck isn't on the road right now"
         }
-        getSystemService(NotificationManager::class.java).notify(WATCH_NOTIFICATION_ID, createWatchNotification(text))
+        return status.message ?: "Watching for garbage truck alerts..."
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
