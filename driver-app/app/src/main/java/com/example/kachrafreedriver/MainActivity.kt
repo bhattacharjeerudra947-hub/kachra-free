@@ -3,6 +3,7 @@ package com.example.kachrafreedriver
 import android.Manifest
 import android.content.Intent
 import android.content.SharedPreferences
+import android.location.Location
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -26,8 +27,12 @@ class MainActivity : ComponentActivity() {
         // in case the button was pressed by accident.
         private const val ADD_STOP_DELAY_MS = 20_000L
 
-        // How often to check the server is reachable, for the pill at the top.
-        private const val PING_INTERVAL_MS = 10_000L
+        // How often to check the server is reachable while not tracking, for
+        // the pill at the top. (While tracking, the location uploads show it.)
+        private const val PING_INTERVAL_MS = 2_000L
+
+        // The "Garbage collected" button shows within this distance of a stop.
+        private const val COLLECT_RADIUS_METERS = 30f
     }
 
     private lateinit var prefs: SharedPreferences
@@ -37,7 +42,13 @@ class MainActivity : ComponentActivity() {
     private var tracking by mutableStateOf(false)
     private var locationText by mutableStateOf<String?>(null)
     private var serverText by mutableStateOf<String?>(null)
-    private var stopNames by mutableStateOf<List<String>>(emptyList())
+    // e.g. "3. Janpath Market - next"
+    private var stopLines by mutableStateOf<List<String>>(emptyList())
+    // e.g. "Next stop: 3. Janpath Market, 240 m away"
+    private var nextStopText by mutableStateOf<String?>(null)
+    // The stop the "Garbage collected" button is for (within 30 m), if any.
+    private var collectStop by mutableStateOf<ServerApi.Stop?>(null)
+    private var collectStopNumber by mutableStateOf(0)
     private var pendingStopSecondsLeft by mutableStateOf<Int?>(null)
     // null until the first ping finishes.
     private var serverReachable by mutableStateOf<Boolean?>(null)
@@ -58,14 +69,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Checks the server is reachable every PING_INTERVAL_MS while visible,
-    // whether or not tracking is on.
+    // Checks the server is reachable every PING_INTERVAL_MS while visible
+    // and not tracking. While tracking, each location upload already tells
+    // us, so there's no extra request.
     private val pingRunnable = object : Runnable {
         override fun run() {
-            Thread {
-                val reachable = ServerApi.ping()
-                runOnUiThread { serverReachable = reachable }
-            }.start()
+            if (!LocationService.isRunning) {
+                Thread {
+                    val reachable = ServerApi.ping()
+                    runOnUiThread { serverReachable = reachable }
+                }.start()
+            }
             uiHandler.postDelayed(this, PING_INTERVAL_MS)
         }
     }
@@ -99,7 +113,10 @@ class MainActivity : ComponentActivity() {
                     tracking = tracking,
                     locationText = locationText,
                     serverText = serverText,
-                    stopNames = stopNames,
+                    stopLines = stopLines,
+                    nextStopText = nextStopText,
+                    collectStopLabel = collectStopLabel(),
+                    onCollected = { markCollected() },
                     pendingStopSecondsLeft = pendingStopSecondsLeft,
                     onStartTracking = { checkTruckAndStart() },
                     onStopTracking = { stopTracking() },
@@ -157,12 +174,10 @@ class MainActivity : ComponentActivity() {
             serverText = "Server: unreachable"
         }
 
-        // Stop list.
-        val names = mutableListOf<String>()
-        for (stop in LocationService.routeStops ?: emptyList()) {
-            names.add(stop.name)
-        }
-        stopNames = names
+        // Server pill: while tracking, did the last upload get through?
+        if (tracking && uploadOk != null) serverReachable = uploadOk
+
+        refreshStops(fix)
 
         // "Adding stop in Ns" countdown.
         if (pendingStop == null) {
@@ -171,6 +186,85 @@ class MainActivity : ComponentActivity() {
             val secondsLeft = ((pendingStopDeadline - SystemClock.elapsedRealtime()) / 1000L).toInt()
             pendingStopSecondsLeft = maxOf(secondsLeft, 0)
         }
+    }
+
+    /** The stop list, the next stop, and whether to show "Garbage collected". */
+    private fun refreshStops(fix: LocationService.LocationSnapshot?) {
+        val stops = LocationService.routeStops ?: emptyList()
+
+        val lines = mutableListOf<String>()
+        for (i in stops.indices) {
+            val stop = stops[i]
+            var line = "${i + 1}. ${stop.name}"
+            if (stop.status == "collected") line += "  ✓ collected"
+            if (stop.status == "skipped") line += "  ⚠ skipped"
+            if (stop.status == "next") line += "  ← next"
+            lines.add(line)
+        }
+        stopLines = lines
+
+        // Next stop and how far it is.
+        nextStopText = null
+        for (i in stops.indices) {
+            val stop = stops[i]
+            if (stop.status != "next") continue
+            nextStopText = "Next stop: ${i + 1}. ${stop.name}"
+            if (fix != null) {
+                val metres = distanceMeters(fix.latitude, fix.longitude, stop.latitude, stop.longitude)
+                nextStopText += ", ${metres.toInt()} m away"
+            }
+        }
+        if (nextStopText == null && stops.isNotEmpty() && tracking) {
+            nextStopText = "All stops done for today"
+        }
+
+        // "Garbage collected" is offered for the closest stop within 30 m
+        // that isn't collected yet (usually the next one; another one if the
+        // driver skipped ahead).
+        collectStop = null
+        if (fix == null) return
+        var closest = COLLECT_RADIUS_METERS
+        for (i in stops.indices) {
+            val stop = stops[i]
+            if (stop.status == "collected") continue
+            val metres = distanceMeters(fix.latitude, fix.longitude, stop.latitude, stop.longitude)
+            if (metres <= closest) {
+                closest = metres
+                collectStop = stop
+                collectStopNumber = i + 1
+            }
+        }
+    }
+
+    private fun distanceMeters(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Float {
+        val result = FloatArray(1)
+        Location.distanceBetween(lat1, lng1, lat2, lng2, result)
+        return result[0]
+    }
+
+    private fun collectStopLabel(): String? {
+        val stop = collectStop
+        if (stop == null) return null
+        return "Garbage collected at $collectStopNumber. ${stop.name}"
+    }
+
+    private fun markCollected() {
+        val stop = collectStop
+        if (stop == null) return
+        val id = truckId
+
+        Thread {
+            val stops = ServerApi.markCollected(id, stop.id)
+            runOnUiThread {
+                if (stops != null) {
+                    LocationService.routeStops = stops
+                    refreshFromService()
+                    Toast.makeText(this, "${stop.name}: collected", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Couldn't reach the server. Press it again.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
     }
 
     private fun startAddingStop() {

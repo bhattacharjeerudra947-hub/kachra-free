@@ -18,7 +18,8 @@ import org.json.JSONObject
  */
 object ServerApi {
 
-    data class Stop(val name: String, val latitude: Double, val longitude: Double)
+    // status is today's: "collected", "skipped", "next" or "pending".
+    data class Stop(val id: String, val name: String, val latitude: Double, val longitude: Double, val status: String)
 
     enum class TruckCheck { FOUND, UNKNOWN_TRUCK, UNREACHABLE }
 
@@ -44,6 +45,19 @@ object ServerApi {
             .put("longitude", longitude)
             .put("timestamp", timestamp)
         return stopsFrom(request("POST", "/api/trucks/location", body))
+    }
+
+    /** The driver pressed "Stop sharing location": the truck shows offline at once. */
+    fun stopSharing(truckId: String) {
+        request("POST", "/api/trucks/stop-sharing", JSONObject().put("truckId", truckId))
+    }
+
+    /** The driver pressed "Garbage collected" at this stop. */
+    fun markCollected(truckId: String, stopId: String): List<Stop>? {
+        val body = JSONObject()
+            .put("truckId", truckId)
+            .put("stopId", stopId)
+        return stopsFrom(request("POST", "/api/trucks/collected", body))
     }
 
     /** Adds a collection point at the end of this truck's collection order. */
@@ -94,7 +108,13 @@ object ServerApi {
         if (array == null) return stops
         for (i in 0 until array.length()) {
             val stop = array.getJSONObject(i)
-            stops.add(Stop(stop.getString("name"), stop.getDouble("latitude"), stop.getDouble("longitude")))
+            stops.add(Stop(
+                stop.getString("id"),
+                stop.getString("name"),
+                stop.getDouble("latitude"),
+                stop.getDouble("longitude"),
+                stop.getString("status")
+            ))
         }
         return stops
     }

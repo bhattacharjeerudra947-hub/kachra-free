@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -22,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -33,7 +35,10 @@ fun MainScreen(
     tracking: Boolean,
     locationText: String?,
     serverText: String?,
-    stopNames: List<String>,
+    stopLines: List<String>,
+    nextStopText: String?,
+    collectStopLabel: String?,
+    onCollected: () -> Unit,
     pendingStopSecondsLeft: Int?,
     onStartTracking: () -> Unit,
     onStopTracking: () -> Unit,
@@ -109,6 +114,23 @@ fun MainScreen(
                 HorizontalDivider()
                 Spacer(Modifier.height(16.dp))
 
+                // ---- Next stop, and "Garbage collected" once within 30 m ----
+                if (nextStopText != null) {
+                    Text(nextStopText, style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(8.dp))
+                }
+                if (collectStopLabel != null) {
+                    Button(
+                        onClick = onCollected,
+                        modifier = Modifier.fillMaxWidth().height(56.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2F9E44))
+                    ) {
+                        Text(collectStopLabel, style = MaterialTheme.typography.titleMedium)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                Spacer(Modifier.height(16.dp))
                 Text("Collection stops", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "Park at a spot where residents bring their garbage, then press Add stop.",
@@ -136,11 +158,11 @@ fun MainScreen(
 
                 Spacer(Modifier.height(8.dp))
 
-                if (stopNames.isEmpty()) {
+                if (stopLines.isEmpty()) {
                     Text("No stops yet.", style = MaterialTheme.typography.bodyMedium)
                 } else {
-                    stopNames.forEachIndexed { i, name ->
-                        Text("${i + 1}. $name", style = MaterialTheme.typography.bodyMedium)
+                    for (line in stopLines) {
+                        Text(line, style = MaterialTheme.typography.bodyLarge)
                     }
                 }
             }

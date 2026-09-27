@@ -42,7 +42,7 @@ import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Polyline
 
 /**
- * The main page once registered (AGENTS.md section 5): a full-screen map
+ * The main page once registered (CLAUDE.md section 5): a full-screen map
  * with the truck, its numbered stops (dustbins), the road it's expected to
  * take and the resident's house (pin). Over it: the server status and a
  * settings button at the top, the ETA card at the bottom.
@@ -141,7 +141,9 @@ private fun drawEverything(map: MapView, context: android.content.Context,
             val isMine = i == status.stopIndex
             var title = "${i + 1}. ${stop.name}"
             if (isMine) title += " (your collection point)"
-            val icon = stopIcon(context, i + 1, isMine)
+            if (stop.status == "collected") title += " - collected today"
+            if (stop.status == "skipped") title += " - skipped today"
+            val icon = stopIcon(context, i + 1, isMine, stop.status)
             map.overlays.add(iconMarker(map, stop.position, title, icon, STOP_ANCHOR_X, STOP_ANCHOR_Y))
         }
     }
@@ -188,6 +190,7 @@ private val BLUE = Color(0xFF1C7ED6)
 private val GREEN = Color(0xFF2F9E44)
 private val GREY = Color(0xFF868E96)
 private val RED = Color(0xFFE03131)
+private val AMBER = Color(0xFFE67700)
 
 private fun cardText(status: ServerApi.TruckStatus?): CardText {
     if (status == null) {
@@ -213,7 +216,8 @@ private fun cardText(status: ServerApi.TruckStatus?): CardText {
             return CardText(big, "min", "On the way", BLUE, line)
         }
         "at_stop" -> return CardText("Now", "", "At your stop", GREEN, "Bring your garbage out!")
-        "collected" -> return CardText("Done", "", "Collected", GREY, "Garbage was collected at your stop today")
+        "collected" -> return CardText("Done", "", "Collected", GREEN, "Garbage was collected at your stop today")
+        "skipped" -> return CardText("Missed", "", "Skipped", AMBER, "The truck skipped your stop today")
         "truck_offline" -> {
             var line = "The truck isn't sharing its location right now"
             if (status.usualTime != null) line = "Usually at your stop around ${status.usualTime}"

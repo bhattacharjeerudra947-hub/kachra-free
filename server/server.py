@@ -71,10 +71,15 @@ def new_id():
     return secrets.token_hex(4)
 
 
-def stops_for_driver(truck):
+def stops_for_driver(truck_id):
+    """The truck's stops for the driver app, with today's status of each
+    ("collected", "skipped", "next" or "pending"). Caller holds db.lock."""
+    truck = db.data["trucks"][truck_id]
+    statuses = eta.stop_statuses(db.data, truck_id)
     stops = []
-    for stop in truck["stops"]:
-        stops.append({"name": stop["name"], "latitude": stop["lat"], "longitude": stop["lng"]})
+    for i, stop in enumerate(truck["stops"]):
+        stops.append({"id": stop["id"], "name": stop["name"], "latitude": stop["lat"],
+                      "longitude": stop["lng"], "status": statuses[i]})
     return stops
 
 
@@ -99,7 +104,7 @@ def truck_info(request):
         truck = db.data["trucks"].get(truck_id)
         if truck is None:
             return 404, {"error": "unknown truck"}
-        return 200, {"ok": True, "stops": stops_for_driver(truck)}
+        return 200, {"ok": True, "stops": stops_for_driver(truck_id)}
 
 
 def truck_location(request):
@@ -119,13 +124,47 @@ def truck_location(request):
         truck["lng"] = lng
         truck["timestamp"] = body.get("timestamp")
         truck["lastSeen"] = now
+        truck["sharing"] = True
         db.append_track(truck_id, eta.today(), lat, lng, now)
-        eta.record_position(db.data, truck_id)
         alerts.check_alerts(db.data, truck_id)
         db.save()
         # Sending the stop list back on every update keeps the driver app in
         # sync with admin edits, with no extra request.
-        return 200, {"ok": True, "stops": stops_for_driver(truck)}
+        return 200, {"ok": True, "stops": stops_for_driver(truck_id)}
+
+
+def truck_stop_sharing(request):
+    """The driver pressed "Stop sharing location": the truck is offline
+    straight away, rather than after ACTIVE_SECONDS of silence."""
+    truck_id = str(request.json_body().get("truckId") or "").strip()
+    with db.lock:
+        truck = db.data["trucks"].get(truck_id)
+        if truck is None:
+            return 404, {"error": "unknown truck"}
+        truck["sharing"] = False
+        db.save()
+    return 200, {"ok": True}
+
+
+def truck_collected(request):
+    """The driver pressed "Garbage collected" at a stop."""
+    body = request.json_body()
+    truck_id = str(body.get("truckId") or "").strip()
+    stop_id = body.get("stopId")
+    with db.lock:
+        truck = db.data["trucks"].get(truck_id)
+        if truck is None:
+            return 404, {"error": "unknown truck"}
+        stop_index = None
+        for i, stop in enumerate(truck["stops"]):
+            if stop["id"] == stop_id:
+                stop_index = i
+        if stop_index is None:
+            raise BadRequest("no such stop on this truck")
+        eta.mark_collected(db.data, truck_id, stop_index)
+        alerts.check_alerts(db.data, truck_id)
+        db.save()
+        return 200, {"ok": True, "stops": stops_for_driver(truck_id)}
 
 
 def truck_add_stop(request):
@@ -151,7 +190,7 @@ def truck_add_stop(request):
             "addedBy": "driver",
         })
         db.save()
-        return 200, {"ok": True, "stops": stops_for_driver(truck)}
+        return 200, {"ok": True, "stops": stops_for_driver(truck_id)}
 
 
 # ---------------------------------------------------- resident-app API --
@@ -171,6 +210,8 @@ def save_resident(body, from_admin):
     alert_minutes = body.get("alertMinutes")
     if not truck_id or not is_number(lat) or not is_number(lng) or not is_number(alert_minutes):
         raise BadRequest("username, truckId, latitude, longitude and alertMinutes are required")
+    if alert_minutes < 1 or alert_minutes > 120:
+        raise BadRequest("alertMinutes must be from 1 to 120")
 
     with db.lock:
         if truck_id not in db.data["trucks"]:
@@ -279,7 +320,11 @@ def admin_state(request):
 
         trucks = []
         for truck_id, truck in sorted(data["trucks"].items()):
-            last, _ = eta.progress(data, truck_id)
+            statuses = eta.stop_statuses(data, truck_id)
+            collected_today = 0
+            for status in statuses:
+                if status == "collected":
+                    collected_today += 1
 
             # Earlier days of history: real ones and made-up demo ones.
             past_runs = 0
@@ -307,6 +352,7 @@ def admin_state(request):
                 stops.append({
                     "id": stop["id"], "name": stop["name"], "lat": stop["lat"], "lng": stop["lng"],
                     "addedBy": stop["addedBy"],
+                    "status": statuses[i],  # today: collected / skipped / next / pending
                     "usualTime": eta.usual_time(data, truck_id, stop["id"]),
                     "typicalDwellSeconds": round(eta.typical_dwell(data, truck_id, stop["id"])),
                     # Road to the next stop: as driven, the OSRM route, or none yet.
@@ -320,7 +366,7 @@ def admin_state(request):
                 "secondsSinceUpdate": seconds_since_update,
                 "active": eta.is_active(truck),
                 "stops": stops,
-                "stopsVisitedToday": last + 1,
+                "collectedToday": collected_today,
                 "pastRuns": past_runs,
                 "demoRuns": demo_runs,
                 "routeAgeSeconds": route_age_seconds,
@@ -429,6 +475,52 @@ def admin_track(request):
     return 200, {"points": points}
 
 
+def admin_history(request):
+    """A truck's past collection rounds, newest first, for the admin panel's
+    history table. For each day and each of its current stops: {collectedAt}
+    for a real round, {arrived, left} for a demo round, or None if the stop
+    wasn't collected that day."""
+    with db.lock:
+        truck = get_truck(request.query.get("truckId") or "")
+        truck_id = request.query.get("truckId")
+
+        stops = []
+        for stop in truck["stops"]:
+            stops.append({
+                "name": stop["name"],
+                "usualTime": eta.usual_time(db.data, truck_id, stop["id"]),
+                "typicalDwellSeconds": round(eta.typical_dwell(db.data, truck_id, stop["id"])),
+            })
+
+        days = []
+        for run in db.data["runs"].values():
+            if run["truckId"] != truck_id:
+                continue
+            visits = []
+            for stop in truck["stops"]:
+                visit = run["visits"].get(stop["id"])
+                if visit is None:
+                    visits.append(None)
+                else:
+                    # Real rounds: when it was collected. Demo rounds: arrival
+                    # and departure (their difference is the stoppage time).
+                    visits.append(dict(visit))
+            days.append({
+                "date": run["date"],
+                "synthetic": run["synthetic"],
+                "today": run["date"] == eta.today(),
+                "visits": visits,
+            })
+
+    # Newest day first. (ISO dates like "2026-09-27" sort correctly as text.)
+    days.sort(key=get_date, reverse=True)
+    return 200, {"truckId": truck_id, "stops": stops, "days": days}
+
+
+def get_date(day):
+    return day["date"]
+
+
 def admin_save_resident(request):
     username = save_resident(request.json_body(), from_admin=True)
     if username is None:
@@ -437,8 +529,10 @@ def admin_save_resident(request):
 
 
 def admin_delete_resident(request):
+    # Exactly as listed in the admin panel: no username rules needed to delete.
+    username = request.query.get("username") or ""
     with db.lock:
-        db.data["residents"].pop(clean_username(request.query.get("username")), None)
+        db.data["residents"].pop(username, None)
         db.save()
     return 200, {"ok": True}
 
@@ -460,6 +554,8 @@ ROUTES = {
     ("POST", "/api/trucks/location"): truck_location,
     ("GET", "/api/trucks"): truck_info,
     ("POST", "/api/trucks/stops"): truck_add_stop,
+    ("POST", "/api/trucks/stop-sharing"): truck_stop_sharing,
+    ("POST", "/api/trucks/collected"): truck_collected,
     ("POST", "/api/residents/register"): resident_register,
     ("GET", "/api/residents/status"): resident_status,
     ("GET", "/api/places/search"): places_search,
@@ -471,6 +567,7 @@ ROUTES = {
     ("POST", "/api/admin/trucks/stops"): admin_save_stops,
     ("POST", "/api/admin/trucks/demo-history"): admin_demo_history,
     ("GET", "/api/admin/track"): admin_track,
+    ("GET", "/api/admin/history"): admin_history,
     ("POST", "/api/admin/residents"): admin_save_resident,
     ("DELETE", "/api/admin/residents"): admin_delete_resident,
     ("POST", "/api/admin/settings"): admin_save_settings,

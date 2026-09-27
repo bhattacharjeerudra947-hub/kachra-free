@@ -1,4 +1,4 @@
-"""Threshold alerts (AGENTS.md sections 3 and 12).
+"""Threshold alerts (CLAUDE.md sections 3 and 12).
 
 After every truck location update, check_alerts() recomputes the ETA of
 every resident who registered with that truck's ID. The first time an ETA

@@ -17,9 +17,8 @@ class BootReceiver : BroadcastReceiver() {
         val prefs = context.getSharedPreferences(AppPrefs.FILE_NAME, Context.MODE_PRIVATE)
         if (!prefs.getBoolean(AppPrefs.KEY_REGISTERED, false)) return
 
-        ContextCompat.startForegroundService(
-            context,
-            Intent(context, AlertService::class.java).apply { action = AlertService.ACTION_START }
-        )
+        val start = Intent(context, AlertService::class.java)
+        start.action = AlertService.ACTION_START
+        ContextCompat.startForegroundService(context, start)
     }
 }
