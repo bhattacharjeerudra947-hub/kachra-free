@@ -501,7 +501,8 @@ find("#save-stops").addEventListener("click", async () => {
   // Only send what the admin can edit; the server keeps the rest.
   const stops = [];
   for (const stop of stopsDraft) {
-    stops.push({ id: stop.id, name: stop.name, lat: stop.lat, lng: stop.lng });
+    // wrapLongitude also fixes stops that were saved from a copy of the map.
+    stops.push({ id: stop.id, name: stop.name, lat: stop.lat, lng: wrapLongitude(stop.lng) });
   }
   try {
     await api("POST", "/api/admin/trucks/stops", { truckId: selectedTruckId, stops: stops });
@@ -885,10 +886,16 @@ map.on("moveend", () => {
   if (state) renderMap();
 });
 
+// Leaflet shows copies of the world side by side, so a click on a copy can
+// give a longitude like -271.6 instead of 88.4. Bring it back to -180..180.
+function wrapLongitude(lng) {
+  return ((lng + 180) % 360 + 360) % 360 - 180;
+}
+
 map.on("click", (event) => {
   // 6 decimal places is about 10 cm: plenty.
   const lat = Number(event.latlng.lat.toFixed(6));
-  const lng = Number(event.latlng.lng.toFixed(6));
+  const lng = Number(wrapLongitude(event.latlng.lng).toFixed(6));
 
   if (clickMode === "add-stop" && stopsDraft) {
     stopsDraft.push({ id: null, name: "Stop " + (stopsDraft.length + 1), lat: lat, lng: lng });

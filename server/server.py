@@ -54,6 +54,13 @@ def is_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def is_position(lat, lng):
+    """A real place on Earth: latitude -90..90, longitude -180..180."""
+    if not is_number(lat) or not is_number(lng):
+        return False
+    return -90 <= lat <= 90 and -180 <= lng <= 180
+
+
 def clean_username(value):
     """A resident's username, as typed in the app. Upper/lower case and
     surrounding spaces don't matter: "Asha" and " asha " are the same
@@ -83,6 +90,18 @@ def stops_for_driver(truck_id):
     return stops
 
 
+def driver_reply(truck_id):
+    """What every driver-app request gets back: the truck's stops with
+    today's statuses, and how close the driver must be to a stop to see the
+    "Garbage collected" button (the admin panel's stop radius setting).
+    Caller holds db.lock."""
+    return {
+        "ok": True,
+        "stops": stops_for_driver(truck_id),
+        "collectRadiusMeters": db.data["settings"]["stopRadiusMeters"],
+    }
+
+
 def get_truck(truck_id):
     """Caller holds db.lock."""
     truck = db.data["trucks"].get(truck_id)
@@ -104,7 +123,7 @@ def truck_info(request):
         truck = db.data["trucks"].get(truck_id)
         if truck is None:
             return 404, {"error": "unknown truck"}
-        return 200, {"ok": True, "stops": stops_for_driver(truck_id)}
+        return 200, driver_reply(truck_id)
 
 
 def truck_location(request):
@@ -112,8 +131,8 @@ def truck_location(request):
     truck_id = str(body.get("truckId") or "").strip()
     lat = body.get("latitude")
     lng = body.get("longitude")
-    if not truck_id or not is_number(lat) or not is_number(lng):
-        raise BadRequest("truckId, latitude and longitude are required")
+    if not truck_id or not is_position(lat, lng):
+        raise BadRequest("truckId and a valid latitude and longitude are required")
 
     with db.lock:
         truck = db.data["trucks"].get(truck_id)
@@ -130,7 +149,7 @@ def truck_location(request):
         db.save()
         # Sending the stop list back on every update keeps the driver app in
         # sync with admin edits, with no extra request.
-        return 200, {"ok": True, "stops": stops_for_driver(truck_id)}
+        return 200, driver_reply(truck_id)
 
 
 def truck_stop_sharing(request):
@@ -164,7 +183,7 @@ def truck_collected(request):
         eta.mark_collected(db.data, truck_id, stop_index)
         alerts.check_alerts(db.data, truck_id)
         db.save()
-        return 200, {"ok": True, "stops": stops_for_driver(truck_id)}
+        return 200, driver_reply(truck_id)
 
 
 def truck_add_stop(request):
@@ -174,8 +193,8 @@ def truck_add_stop(request):
     truck_id = str(body.get("truckId") or "").strip()
     lat = body.get("latitude")
     lng = body.get("longitude")
-    if not truck_id or not is_number(lat) or not is_number(lng):
-        raise BadRequest("truckId, latitude and longitude are required")
+    if not truck_id or not is_position(lat, lng):
+        raise BadRequest("truckId and a valid latitude and longitude are required")
 
     with db.lock:
         truck = db.data["trucks"].get(truck_id)
@@ -189,8 +208,9 @@ def truck_add_stop(request):
             "lng": lng,
             "addedBy": "driver",
         })
+        routing.stops_changed(truck_id, truck)
         db.save()
-        return 200, {"ok": True, "stops": stops_for_driver(truck_id)}
+        return 200, driver_reply(truck_id)
 
 
 # ---------------------------------------------------- resident-app API --
@@ -208,7 +228,7 @@ def save_resident(body, from_admin):
     lat = body.get("latitude")
     lng = body.get("longitude")
     alert_minutes = body.get("alertMinutes")
-    if not truck_id or not is_number(lat) or not is_number(lng) or not is_number(alert_minutes):
+    if not truck_id or not is_position(lat, lng) or not is_number(alert_minutes):
         raise BadRequest("username, truckId, latitude, longitude and alertMinutes are required")
     if alert_minutes < 1 or alert_minutes > 120:
         raise BadRequest("alertMinutes must be from 1 to 120")
@@ -422,7 +442,8 @@ def admin_save_stops(request):
         raise BadRequest("stops must be a list")
 
     with db.lock:
-        truck = get_truck(str(body.get("truckId") or ""))
+        truck_id = str(body.get("truckId") or "")
+        truck = get_truck(truck_id)
 
         # The truck's current stops, by id.
         existing = {}
@@ -431,8 +452,8 @@ def admin_save_stops(request):
 
         new_stops = []
         for i, stop in enumerate(stops):
-            if not isinstance(stop, dict) or not is_number(stop.get("lat")) or not is_number(stop.get("lng")):
-                raise BadRequest("every stop needs a numeric lat and lng")
+            if not isinstance(stop, dict) or not is_position(stop.get("lat"), stop.get("lng")):
+                raise BadRequest("every stop needs a lat (-90..90) and lng (-180..180)")
 
             if stop.get("id") in existing:
                 # A stop we already had: start from a copy of it, keeping its road data.
@@ -446,6 +467,7 @@ def admin_save_stops(request):
             new_stop["lng"] = stop["lng"]
             new_stops.append(new_stop)
         truck["stops"] = new_stops
+        routing.stops_changed(truck_id, truck)
         db.save()
     return 200, {"ok": True}
 
@@ -673,6 +695,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    routing.clear_old_errors()
     threading.Thread(target=routing.updater, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"Kachra Free server on http://localhost:{PORT}", flush=True)

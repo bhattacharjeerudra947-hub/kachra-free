@@ -23,6 +23,11 @@ object ServerApi {
 
     enum class TruckCheck { FOUND, UNKNOWN_TRUCK, UNREACHABLE }
 
+    // How close the driver must be to a stop to see "Garbage collected": the
+    // admin panel's setting, sent with every stop list. 30 m until then.
+    @Volatile
+    var collectRadiusMeters = 30f
+
     /** true if the server answered at all. */
     fun ping(): Boolean {
         return request("GET", "/api/ping", null).code in 200..299
@@ -103,6 +108,9 @@ object ServerApi {
     private fun stopsFrom(response: Response): List<Stop>? {
         val json = response.json
         if (json == null) return null
+        if (json.has("collectRadiusMeters")) {
+            collectRadiusMeters = json.getDouble("collectRadiusMeters").toFloat()
+        }
         val stops = mutableListOf<Stop>()
         val array: JSONArray? = json.optJSONArray("stops")
         if (array == null) return stops
