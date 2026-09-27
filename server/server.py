@@ -28,6 +28,8 @@ PASSWORD_FILE = os.path.join(db.DATA_DIR, "admin_password.txt")
 
 
 class BadRequest(Exception):
+    """Raised when a request is missing something or has a wrong value.
+    handle_request() turns it into a 400 reply with the message."""
     pass
 
 
@@ -51,7 +53,16 @@ ADMIN_PASSWORD = load_admin_password()
 
 
 def is_number(value):
+    # True/False count as numbers in Python (1/0), so they're ruled out.
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def text(value):
+    """The value as text with the spaces around it trimmed, or "" if it's
+    missing. For IDs and search words that arrive in a request."""
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def is_position(lat, lng):
@@ -65,7 +76,7 @@ def clean_username(value):
     """A resident's username, as typed in the app. Upper/lower case and
     surrounding spaces don't matter: "Asha" and " asha " are the same
     resident. Allowed: 3 to 30 letters, digits, ".", "_" or "-"."""
-    username = str(value or "").strip().lower()
+    username = text(value).lower()
     if len(username) < 3 or len(username) > 30:
         raise BadRequest("username must be 3 to 30 characters")
     for ch in username:
@@ -75,6 +86,7 @@ def clean_username(value):
 
 
 def new_id():
+    """A random 8-character ID for a new stop, e.g. "3fa9c21b"."""
     return secrets.token_hex(4)
 
 
@@ -103,7 +115,8 @@ def driver_reply(truck_id):
 
 
 def get_truck(truck_id):
-    """Caller holds db.lock."""
+    """The truck with this ID, or a 400 error if there isn't one.
+    Caller holds db.lock."""
     truck = db.data["trucks"].get(truck_id)
     if truck is None:
         raise BadRequest(f"no truck with ID {truck_id}")
@@ -118,7 +131,7 @@ def get_truck(truck_id):
 def truck_info(request):
     """The driver app checks its Truck ID with this before it starts
     tracking. 404 if there's no such truck."""
-    truck_id = (request.query.get("truckId") or "").strip()
+    truck_id = text(request.query.get("truckId"))
     with db.lock:
         truck = db.data["trucks"].get(truck_id)
         if truck is None:
@@ -127,8 +140,9 @@ def truck_info(request):
 
 
 def truck_location(request):
+    """The driver app's location update (every 2 s while sharing)."""
     body = request.json_body()
-    truck_id = str(body.get("truckId") or "").strip()
+    truck_id = text(body.get("truckId"))
     lat = body.get("latitude")
     lng = body.get("longitude")
     if not truck_id or not is_position(lat, lng):
@@ -141,10 +155,11 @@ def truck_location(request):
         now = time.time()
         truck["lat"] = lat
         truck["lng"] = lng
-        truck["timestamp"] = body.get("timestamp")
-        truck["lastSeen"] = now
+        truck["timestamp"] = body.get("timestamp")  # the phone's own time of the fix
+        truck["lastSeen"] = now                     # the server's time: used for online/offline
         truck["sharing"] = True
         db.append_track(truck_id, eta.today(), lat, lng, now)
+        # The truck moved, so residents' ETAs changed: send any alerts now due.
         alerts.check_alerts(db.data, truck_id)
         db.save()
         # Sending the stop list back on every update keeps the driver app in
@@ -155,7 +170,7 @@ def truck_location(request):
 def truck_stop_sharing(request):
     """The driver pressed "Stop sharing location": the truck is offline
     straight away, rather than after ACTIVE_SECONDS of silence."""
-    truck_id = str(request.json_body().get("truckId") or "").strip()
+    truck_id = text(request.json_body().get("truckId"))
     with db.lock:
         truck = db.data["trucks"].get(truck_id)
         if truck is None:
@@ -168,12 +183,13 @@ def truck_stop_sharing(request):
 def truck_collected(request):
     """The driver pressed "Garbage collected" at a stop."""
     body = request.json_body()
-    truck_id = str(body.get("truckId") or "").strip()
+    truck_id = text(body.get("truckId"))
     stop_id = body.get("stopId")
     with db.lock:
         truck = db.data["trucks"].get(truck_id)
         if truck is None:
             return 404, {"error": "unknown truck"}
+        # Find which stop (by its position in the list) was collected.
         stop_index = None
         for i, stop in enumerate(truck["stops"]):
             if stop["id"] == stop_id:
@@ -190,7 +206,7 @@ def truck_add_stop(request):
     """The driver app's "Add stop here" button: a new collection point at
     the end of this truck's collection order."""
     body = request.json_body()
-    truck_id = str(body.get("truckId") or "").strip()
+    truck_id = text(body.get("truckId"))
     lat = body.get("latitude")
     lng = body.get("longitude")
     if not truck_id or not is_position(lat, lng):
@@ -224,7 +240,7 @@ def save_resident(body, from_admin):
     same resident, and their record is updated. Returns the username, or
     None if the truck doesn't exist."""
     username = clean_username(body.get("username"))
-    truck_id = str(body.get("truckId") or "").strip()
+    truck_id = text(body.get("truckId"))
     lat = body.get("latitude")
     lng = body.get("longitude")
     alert_minutes = body.get("alertMinutes")
@@ -245,19 +261,26 @@ def save_resident(body, from_admin):
         resident["lat"] = lat
         resident["lng"] = lng
         resident["alertMinutes"] = alert_minutes
-        resident["address"] = body.get("address") or None
+        # The address is optional: an empty one is stored as None.
+        address = text(body.get("address"))
+        if address == "":
+            address = None
+        resident["address"] = address
         resident["updatedAt"] = time.time()
         db.save()
     return username
 
 
 def resident_register(request):
+    """The resident app's Register / Save button."""
     if save_resident(request.json_body(), from_admin=False) is None:
         return 404, {"error": "unknown truck"}
     return 200, {"ok": True}
 
 
 def resident_status(request):
+    """Everything the resident app shows: ETA, truck, stops, route, and
+    today's alert if one was sent (the app polls this every 2 s)."""
     username = clean_username(request.query.get("username"))
 
     with db.lock:
@@ -276,8 +299,9 @@ def resident_status(request):
 
 
 def places_search(request):
+    """The resident app's house picker: the Go button's search."""
     global last_search_error, last_search_error_at
-    query = (request.query.get("query") or "").strip()
+    query = text(request.query.get("query"))
     if not query:
         return 200, {"results": []}
     try:
@@ -291,7 +315,7 @@ def places_search(request):
 def places_suggest(request):
     """Search suggestions while the resident is typing (osm.suggest)."""
     global last_search_error, last_search_error_at
-    query = (request.query.get("query") or "").strip()
+    query = text(request.query.get("query"))
     if len(query) < 3:
         return 200, {"results": []}  # too short to suggest anything useful
 
@@ -334,6 +358,8 @@ def system_alerts(trucks):
 # -------------------------------------------------------------- admin --
 
 def admin_state(request):
+    """Everything the admin panel shows, in one reply (it asks every 2 s):
+    alerts, trucks with their stops and roads, residents and settings."""
     with db.lock:
         data = db.data
         now = time.time()
@@ -416,7 +442,8 @@ def admin_state(request):
 
 
 def admin_add_truck(request):
-    truck_id = str(request.json_body().get("id") or "").strip()
+    """Add truck. Adding one that already exists does nothing."""
+    truck_id = text(request.json_body().get("id"))
     if not truck_id:
         raise BadRequest("id is required")
     with db.lock:
@@ -427,6 +454,7 @@ def admin_add_truck(request):
 
 
 def admin_delete_truck(request):
+    """Delete a truck and its stops. (Its past rounds stay in the history.)"""
     with db.lock:
         db.data["trucks"].pop(request.query.get("id"), None)
         db.save()
@@ -442,7 +470,7 @@ def admin_save_stops(request):
         raise BadRequest("stops must be a list")
 
     with db.lock:
-        truck_id = str(body.get("truckId") or "")
+        truck_id = text(body.get("truckId"))
         truck = get_truck(truck_id)
 
         # The truck's current stops, by id.
@@ -473,9 +501,10 @@ def admin_save_stops(request):
 
 
 def admin_demo_history(request):
+    """Generate or clear a truck's made-up past rounds (eta.py)."""
     body = request.json_body()
     with db.lock:
-        truck_id = str(body.get("truckId") or "")
+        truck_id = text(body.get("truckId"))
         truck = get_truck(truck_id)
         if body.get("action") == "clear":
             count = eta.clear_demo_history(db.data, truck_id)
@@ -489,8 +518,10 @@ def admin_demo_history(request):
 
 def admin_track(request):
     """The roads a truck actually drove on a day: its raw GPS points."""
-    truck_id = request.query.get("truckId") or ""
-    date = request.query.get("date") or eta.today()
+    truck_id = text(request.query.get("truckId"))
+    date = text(request.query.get("date"))
+    if date == "":
+        date = eta.today()
     points = []
     for lat, lng, t in db.read_track(truck_id, date):
         points.append([lat, lng])  # the map doesn't need the times
@@ -503,8 +534,8 @@ def admin_history(request):
     for a real round, {arrived, left} for a demo round, or None if the stop
     wasn't collected that day."""
     with db.lock:
-        truck = get_truck(request.query.get("truckId") or "")
-        truck_id = request.query.get("truckId")
+        truck_id = text(request.query.get("truckId"))
+        truck = get_truck(truck_id)
 
         stops = []
         for stop in truck["stops"]:
@@ -534,16 +565,20 @@ def admin_history(request):
                 "visits": visits,
             })
 
-    # Newest day first. (ISO dates like "2026-09-27" sort correctly as text.)
-    days.sort(key=get_date, reverse=True)
-    return 200, {"truckId": truck_id, "stops": stops, "days": days}
-
-
-def get_date(day):
-    return day["date"]
+    # Newest day first. A truck has one round per date, so look them up by
+    # date, then go through the dates newest first. (ISO dates like
+    # "2026-09-27" sort correctly as text.)
+    days_by_date = {}
+    for day in days:
+        days_by_date[day["date"]] = day
+    newest_first = []
+    for date in sorted(days_by_date, reverse=True):
+        newest_first.append(days_by_date[date])
+    return 200, {"truckId": truck_id, "stops": stops, "days": newest_first}
 
 
 def admin_save_resident(request):
+    """The admin panel's resident Edit form (it can't add residents)."""
     username = save_resident(request.json_body(), from_admin=True)
     if username is None:
         raise BadRequest("unknown truck")
@@ -552,7 +587,7 @@ def admin_save_resident(request):
 
 def admin_delete_resident(request):
     # Exactly as listed in the admin panel: no username rules needed to delete.
-    username = request.query.get("username") or ""
+    username = text(request.query.get("username"))
     with db.lock:
         db.data["residents"].pop(username, None)
         db.save()
@@ -560,6 +595,7 @@ def admin_delete_resident(request):
 
 
 def admin_save_settings(request):
+    """The admin panel's Settings form. Every setting must be a positive number."""
     body = request.json_body()
     with db.lock:
         settings = db.data["settings"]
@@ -572,6 +608,7 @@ def admin_save_settings(request):
     return 200, {"ok": True}
 
 
+# Which function answers which request: (HTTP method, path) -> function.
 ROUTES = {
     ("POST", "/api/trucks/location"): truck_location,
     ("GET", "/api/trucks"): truck_info,
@@ -595,6 +632,7 @@ ROUTES = {
     ("POST", "/api/admin/settings"): admin_save_settings,
 }
 
+# The admin panel's own files: path -> (file in admin/, content type).
 STATIC_FILES = {
     "/admin": ("index.html", "text/html; charset=utf-8"),
     "/admin/admin.js": ("admin.js", "text/javascript; charset=utf-8"),
@@ -603,6 +641,8 @@ STATIC_FILES = {
 
 
 class Handler(BaseHTTPRequestHandler):
+    """Python's HTTP server creates one of these per request and calls
+    do_GET / do_POST / do_DELETE; all three go to handle_request()."""
 
     def do_GET(self):
         self.handle_request("GET")
@@ -615,7 +655,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_request(self, method):
         url = urllib.parse.urlparse(self.path)
-        path = url.path.rstrip("/") or "/"
+        # "/api/ping/" and "/api/ping" are the same path; "" means "/".
+        path = url.path.rstrip("/")
+        if path == "":
+            path = "/"
 
         # "?username=asha&x=1" -> {"username": "asha", "x": "1"}. parse_qs gives a
         # list per name (a name can repeat); we only ever need the first.
@@ -623,12 +666,14 @@ class Handler(BaseHTTPRequestHandler):
         for name, values in urllib.parse.parse_qs(url.query).items():
             self.query[name] = values[0]
 
+        # The bare address opens the admin panel.
         if path == "/":
             self.send_response(302)
             self.send_header("Location", "/admin")
             self.end_headers()
             return
 
+        # Everything admin needs the password; the browser then asks for it.
         if path.startswith("/admin") or path.startswith("/api/admin"):
             if not self.is_admin():
                 self.send_response(401)
@@ -641,6 +686,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_file(name, content_type)
             return
 
+        # Find the function for this request, run it, and send its reply.
         handler = ROUTES.get((method, path))
         if handler is None:
             self.send_json(404, {"error": "not found"})
@@ -666,9 +712,13 @@ class Handler(BaseHTTPRequestHandler):
         return user == "admin" and hmac.compare_digest(password.encode(), ADMIN_PASSWORD.encode())
 
     def json_body(self):
+        """The request's JSON body as a dict. An empty body counts as {}."""
         length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length)
+        if raw == b"":
+            raw = b"{}"
         try:
-            body = json.loads(self.rfile.read(length) or b"{}")
+            body = json.loads(raw)
         except ValueError:
             raise BadRequest("body must be JSON")
         if not isinstance(body, dict):
@@ -676,6 +726,7 @@ class Handler(BaseHTTPRequestHandler):
         return body
 
     def send_json(self, status, body):
+        """Reply with a status code and a JSON body."""
         payload = json.dumps(body).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -684,6 +735,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def send_file(self, name, content_type):
+        """Reply with one of the admin panel's files. no-store: the browser
+        always fetches the newest version."""
         with open(os.path.join(ADMIN_DIR, name), "rb") as f:
             payload = f.read()
         self.send_response(200)
@@ -696,6 +749,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     routing.clear_old_errors()
+    # Road routes are fetched on a separate thread, so slow requests to the
+    # route server never hold up the apps. daemon: it stops with the server.
     threading.Thread(target=routing.updater, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"Kachra Free server on http://localhost:{PORT}", flush=True)

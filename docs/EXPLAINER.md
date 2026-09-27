@@ -1,11 +1,26 @@
-# Kachra Free — Full Technical Explainer
+# Kachra Free — Explainer
 
-A complete description of what this repository does and how: every feature,
-every calculation, every endpoint, every dependency and setting. [CLAUDE.md](../CLAUDE.md)
-(the product spec, coding conventions and decisions) says *what* the system should do; this file says exactly how the current code
-does it. Setup and launch steps are in [SETUP.md](SETUP.md).
+**Part 1 (Start here)** explains the whole project in plain English, from
+zero: no programming knowledge assumed. Read it before a demo; it ends with
+the questions people usually ask, and answers.
+**Part 2 (Technical reference)** has every detail (formulas, endpoints,
+settings) for when someone wants to dig in.
+Setup and launch steps are in [SETUP.md](SETUP.md); why things are the way
+they are is in [LOG.md](LOG.md).
 
-**Contents**
+**Part 1 — Start here**
+
+- [A. What Kachra Free is](#a-what-kachra-free-is)
+- [B. The building blocks, from zero](#b-the-building-blocks-from-zero)
+- [C. How the pieces fit together](#c-how-the-pieces-fit-together)
+- [D. One collection round, step by step](#d-one-collection-round-step-by-step)
+- [E. How the ETA is worked out](#e-how-the-eta-is-worked-out)
+- [F. The rules, in plain words](#f-the-rules-in-plain-words)
+- [G. Where is it in the code?](#g-where-is-it-in-the-code)
+- [H. Demo questions and answers](#h-demo-questions-and-answers)
+- [I. Glossary](#i-glossary)
+
+**Part 2 — Technical reference**
 
 1. [Overview](#1-overview)
 2. [Repository layout](#2-repository-layout)
@@ -25,6 +40,305 @@ does it. Setup and launch steps are in [SETUP.md](SETUP.md).
 16. [Checking your changes](#16-checking-your-changes)
 
 ---
+
+# Part 1 — Start here
+
+## A. What Kachra Free is
+
+**The promise: know when your garbage truck is coming.**
+
+A garbage truck drives a fixed round and parks at a few **stops** (collection
+points). People living near a stop bring their garbage out when the truck is
+there. The problem: nobody knows *when* it will come. Kachra Free tells them.
+
+It has three parts:
+
+| Part | Who uses it | What it does |
+|---|---|---|
+| **Driver app** (Android) | The truck driver | Sends the truck's location every 2 seconds. Shows the next stop, and a **Garbage collected** button at each stop. |
+| **Resident app** (Android) | People living on the route | Shows a map with the truck, the stops and the route, a live **ETA** (estimated time of arrival), and sends a notification when the truck is close. |
+| **Server + admin panel** (on a laptop) | The organiser | Receives the truck's location, works out every resident's ETA, sends alerts, and has a web page (the admin panel) to add trucks and stops and watch everything live. |
+
+## B. The building blocks, from zero
+
+**Code and programming languages.** A program is a list of instructions for a
+computer, written in a *programming language*, a precise, English-like
+language the computer can follow. This project uses three:
+
+- **Kotlin**, for the two Android apps. Kotlin is a modern language that
+  Google recommends for Android. It's a close relative of **Java** (older,
+  very widely used): Kotlin runs on the same machinery as Java and can use
+  Java's building blocks, but needs less typing. If you know one, the other
+  reads easily.
+- **Python**, for the server. Python is known for being short and readable.
+  The server only uses what comes with Python itself (its *standard
+  library*): nothing extra to install.
+- **HTML, CSS and JavaScript**, for the admin panel, which is a web page.
+  HTML is the page's content, CSS its looks, JavaScript its behaviour.
+
+**An Android app.** The Kotlin code is turned into an **APK** (Android
+package) by a tool called **Gradle** (`gradlew assembleDebug`). An APK is
+the file you install on a phone. Each screen is written with **Jetpack
+Compose**: a screen is a function that says "show this text, this button,
+this map"; when the data changes, Compose redraws it automatically.
+
+**A server.** A program that runs all the time and waits for other programs
+to ask it things. Ours runs on a laptop (`python server.py`) and keeps all
+the data: trucks, stops, residents, history.
+
+**How the apps talk to the server: HTTP and JSON.** The same way a browser
+loads a web page. An app sends a **request** to an address (a *URL*) and
+gets a **response** back:
+
+- `GET` means "give me something": e.g. the resident app asks
+  `GET /api/residents/status?username=asha`.
+- `POST` means "here's something for you": e.g. the driver app sends
+  `POST /api/trucks/location` with the truck's position.
+
+The data inside is written as **JSON**, a simple text format of names and
+values:
+
+```json
+{ "truckId": "TRUCK-1", "latitude": 22.5113, "longitude": 88.4224 }
+```
+
+The list of addresses the server answers is its **API** (each address is an
+*endpoint*). Part 2, section 9 lists them all.
+
+**Polling.** The apps don't wait to be told things; they ask every 2 seconds
+("any news?"). That's called polling. It's simple and needs no extra service.
+
+**Running in the background.** Android normally pauses apps you're not
+looking at. Both apps use a **foreground service**: a part of the app that
+keeps running, shown by a permanent notification. That's why the driver's
+location keeps going with the phone locked, and why residents still get
+alerts with the app closed.
+
+**The "database".** Everything is saved in one text file, `server/data/db.json`
+(in JSON). The server loads it at start and rewrites it after every change,
+so nothing is lost when the laptop restarts. The truck's GPS trail is kept
+in separate small files, one per truck per day.
+
+**Reaching the laptop from anywhere: ngrok.** Phones on mobile data can't
+normally reach a laptop at home. **ngrok** is a free tool that gives the
+laptop a public web address (`https://….ngrok-free.dev`) and forwards
+everything sent there to the server.
+
+**Maps and roads: OpenStreetMap.** A free, community-made map of the world
+(like Wikipedia for maps). We use free services built on it:
+
+| Service | Used for |
+|---|---|
+| **Map tiles** (the map pictures), shown by **osmdroid** in the apps and **Leaflet** in the admin panel | Drawing the map |
+| **OSRM** | Finding the road route between two points, and how long it normally takes to drive |
+| **Nominatim** | Searching for a place by name (the house picker's Go button) |
+| **Photon** | Search suggestions while you type |
+
+No API keys, accounts or credit cards are needed for any of it.
+
+**Doing several things at once: threads and a lock.** The server answers many
+requests at the same time (each on its own *thread*), and a background
+thread keeps fetching road routes. A **lock** makes sure only one of them
+changes the data at a time, so they never trip over each other.
+
+## C. How the pieces fit together
+
+```text
+   DRIVER APP                    SERVER (laptop)                 RESIDENT APP
+   ──────────                    ───────────────                 ────────────
+   GPS position   ── every 2 s ─▶  stores truck position
+   "Garbage                        marks the stop collected
+    collected"    ─────────────▶   works out every resident's   ◀─ every 2 s: "any news
+                                   ETA                               for asha?"
+   next stop,     ◀── reply ────   sends alerts when due        ── ETA, map, alert ─▶
+   stop statuses                        │    ▲
+                                        ▼    │ road routes and drive times
+                                   OpenStreetMap services (OSRM, Nominatim, Photon)
+
+   ADMIN PANEL (web page) ◀── every 2 s: everything ──▶ server
+   add trucks and stops, see trucks live, history, residents, settings
+
+   ngrok: gives the laptop a public address so phones can reach it from anywhere
+```
+
+## D. One collection round, step by step
+
+1. **Setup (admin panel).** The organiser adds a truck, `TRUCK-1`, and clicks
+   its stops on the map in the order the truck visits them. The server asks
+   OSRM for the road between each pair of stops; the roads appear on the map
+   in a few seconds. **Generate demo history** makes up 14 past days of
+   rounds, so the system already knows how long the truck usually stops at
+   each place.
+2. **A resident registers (resident app).** Asha picks a username, types
+   `TRUCK-1`, drops a pin on her house, and chooses "alert me 10 minutes
+   before". The server finds the truck's stop nearest her house: that's her
+   **collection point**.
+3. **The driver starts (driver app).** The driver types `TRUCK-1` and presses
+   **Start**. The app first checks with the server that this truck exists,
+   then sends the phone's GPS position every 2 seconds. The truck shows as
+   **Online** in the admin panel.
+4. **Every 2 seconds.** Asha's app asks the server for news. The server
+   works out her ETA (section E) and answers with the ETA, the truck's
+   position, the stops and the route. Her map and her notification update.
+5. **At each stop.** When the driver is within 30 m of a stop, a big green
+   **Garbage collected** button appears. Pressing it marks the stop
+   collected: a green ✓ appears on every map. If the driver collects a later
+   stop first, the one in between is marked **skipped** (yellow !).
+6. **The alert.** When Asha's ETA drops to 10 minutes or less, the server
+   records an alert; her app shows a notification "The garbage truck is
+   about 9 minutes from Market gate". She gets this once per day.
+7. **At her stop.** "Now: at your stop, bring your garbage out!" After the
+   driver presses collected: "Done".
+8. **End.** The driver presses **Stop**; the truck shows **Offline** at once.
+   The day's round is saved and appears in the truck's **collection history**
+   in the admin panel.
+
+## E. How the ETA is worked out
+
+```text
+ETA = time to drive to the resident's stop
+    + time the truck usually spends at each stop still before theirs
+```
+
+- **Driving time** comes from OSRM: the normal time to drive those roads.
+  For the part the truck is on right now, only the road still ahead counts,
+  so the number keeps counting down as the truck moves.
+- **Stop time** comes from history: the usual (median) time the truck spent
+  at each stop on past days. For now that comes from the demo history (real
+  rounds record *when* a stop was collected, not how long the truck stood
+  there; that's planned). A stop's time stops counting once the driver
+  presses **Garbage collected** there.
+- If OSRM can't be reached, driving time is estimated as distance ÷ 20 km/h,
+  and the admin panel shows a warning.
+
+**Example.** The truck is 600 m before stop 2; Asha's stop is stop 3.
+
+| Part | Time |
+|---|---|
+| Drive to stop 2 (OSRM, road still ahead) | 2 min |
+| Usual stop at stop 2 | 3 min |
+| Drive from stop 2 to stop 3 (OSRM) | 4 min |
+| **ETA** | **9 min** (always rounded up, never less than 1) |
+
+## F. The rules, in plain words
+
+- **Online / offline.** A truck is online while its driver is sharing and a
+  location arrived in the last 10 seconds. Pressing Stop makes it offline
+  at once; losing internet or GPS, or the phone dying, makes it offline
+  after 10 seconds of silence.
+- **Collected, skipped, next.** Only the driver's button marks a stop
+  collected; nothing is guessed. A stop not collected while a later one was
+  is *skipped*. The first stop after the last collected one is *next*.
+- **One alert per day.** Each resident gets at most one "truck is coming"
+  alert per truck per day, however often the ETA changes.
+- **Collection point.** The truck's stop nearest the house.
+- **A round is per day.** A truck's stops stay collected until midnight.
+  To practise twice in a day, use a different truck ID.
+- **Usernames.** Not case-sensitive; the same username is the same person,
+  on any phone. There are never duplicates.
+- **Nothing is lost on restart.** Everything is in `db.json`; after a
+  restart the maps, stops, roads and history all come back.
+
+## G. Where is it in the code?
+
+| If they ask about… | Look at |
+|---|---|
+| Sending the location every 2 s | `driver-app/…/LocationService.kt` |
+| Driver screen, next stop, Garbage collected button | `driver-app/…/MainActivity.kt`, `ui/main/MainScreen.kt` |
+| Resident registration form | `resident-app/…/ui/main/RegisterScreen.kt` |
+| Resident map and ETA card | `resident-app/…/ui/main/HomeScreen.kt`, `OsmMap.kt` (markers) |
+| House picker, search, suggestions | `resident-app/…/LocationPickerActivity.kt`, `ui/main/LocationPickerScreen.kt` |
+| Background alerts, notifications | `resident-app/…/AlertService.kt` |
+| How an app talks to the server | `…/ServerApi.kt` (one in each app) |
+| The server's addresses (endpoints) | `server/server.py` (the `ROUTES` table at the bottom) |
+| ETA, collected/skipped, history, demo history | `server/eta.py` |
+| Road routes from OSRM | `server/routing.py`, `server/osm.py` |
+| Alerts | `server/alerts.py` |
+| Saving data | `server/db.py` |
+| Admin panel | `server/admin/index.html`, `admin.js`, `admin.css` |
+| Pretend truck for demos | `server/simulate.py` |
+
+## H. Demo questions and answers
+
+**Is it real-time?** Yes: the truck sends its position every 2 seconds, and
+the apps and admin panel refresh every 2 seconds.
+
+**How accurate is the ETA?** It combines real road driving times (from
+OSRM) with how long the truck usually stops at each stop (from past days;
+demo history for now).
+It updates every 2 seconds as the truck moves. It doesn't include live
+traffic: every live-traffic service is paid.
+
+**Why not Google Maps?** Google requires a credit card to get an API key.
+OpenStreetMap services are free and need no key, card or account.
+
+**How does it know the route?** The organiser sets the stops in the order the
+truck visits them. The road between each pair comes from OSRM; once the
+truck has actually driven a stretch, the map shows the real road it took.
+
+**How do you know a stop was collected?** The driver presses **Garbage
+collected** (it appears within 30 m of the stop). We don't guess from GPS.
+
+**What if the driver skips a stop?** It's marked skipped (yellow ! on the
+maps), and residents at that stop see "The truck skipped your stop today".
+
+**What if the internet or GPS drops?** The truck shows offline after 10
+seconds; the resident app keeps showing the last update and says the
+server is offline. Everything resumes by itself when it's back.
+
+**Do residents get spammed with alerts?** No: one alert per truck per day,
+when the ETA first reaches their chosen number of minutes.
+
+**Does it track residents?** No. Their house location is set once, when they
+register. Only the truck is tracked.
+
+**Why no SMS for people without smartphones?** SMS services cost money. Alerts
+are app notifications only for this prototype.
+
+**What happens if the server restarts?** Nothing is lost: everything is saved
+in a file and loaded again at start.
+
+**How does the resident app get alerts when it's closed?** A background
+service (with a permanent notification) keeps checking the server every
+2 seconds.
+
+**Is it secure?** The admin panel is password-protected. The apps don't log
+in, which is fine for a prototype demo; adding a PIN per truck and a
+password per resident is the next step (noted in LOG.md).
+
+**Could it handle a whole city?** Not as it is: it saves to one file and uses
+free public map servers. It's built for a few trucks and a demo; a real
+deployment would use a proper database and its own map servers.
+
+**What did you build it with?** Kotlin for the Android apps, Python (standard
+library only) for the server, plain HTML/CSS/JavaScript for the admin
+panel, and free OpenStreetMap services for maps, roads and search.
+
+## I. Glossary
+
+| Word | Meaning |
+|---|---|
+| **API / endpoint** | The list of addresses a server answers / one of them |
+| **APK** | An Android app's install file |
+| **ETA** | Estimated time of arrival |
+| **Foreground service** | A part of an Android app that keeps running in the background, with a notification |
+| **GPS** | The phone's location from satellites |
+| **HTTP, GET, POST** | How programs send requests over the internet; GET asks for data, POST sends it |
+| **JSON** | A simple text format for data: `{"name": "value"}` |
+| **Leg** | The drive from one stop to the next |
+| **ngrok** | A tool that gives the laptop a public internet address |
+| **OSRM** | Free route finder: road route and normal drive time between points |
+| **Polling** | Asking "any news?" at a fixed interval (here every 2 s) |
+| **Round / run** | One truck's collection round on one day |
+| **Stop / collection point** | A place where the truck parks and residents bring garbage |
+| **Thread / lock** | Parts of a program running at the same time / making sure only one changes data at once |
+
+---
+
+# Part 2 — Technical reference
+
+The rest of this file is the detailed reference: every feature, calculation,
+address, dependency and setting. You don't need it for a demo.
 
 ## 1. Overview
 

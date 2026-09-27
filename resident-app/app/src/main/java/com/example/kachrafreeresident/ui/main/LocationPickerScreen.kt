@@ -99,24 +99,25 @@ fun LocationPickerScreen(
 
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
+                // Runs once, when the map is first shown.
                 factory = {
-                    mapView.apply {
-                        controller.setZoom(DEFAULT_ZOOM)
-                        controller.setCenter(initialLatLng)
-                        // Fires once panning/zooming has stopped for 400 ms: that
-                        // point under the pin is the picked location.
-                        addMapListener(DelayedMapListener(object : MapListener {
-                            override fun onScroll(event: ScrollEvent?): Boolean = onStop()
-                            override fun onZoom(event: ZoomEvent?): Boolean = onStop()
-                            private fun onStop(): Boolean {
-                                center = centerPoint()
-                                settled(center)
-                                return true
-                            }
-                        }, 400))
-                        // Address for the starting position straight away.
-                        post { settled(centerPoint()) }
-                    }
+                    mapView.controller.setZoom(DEFAULT_ZOOM)
+                    mapView.controller.setCenter(initialLatLng)
+                    // Fires once panning/zooming has stopped for 400 ms: that
+                    // point under the pin is the picked location.
+                    mapView.addMapListener(DelayedMapListener(object : MapListener {
+                        override fun onScroll(event: ScrollEvent?): Boolean = onStop()
+                        override fun onZoom(event: ZoomEvent?): Boolean = onStop()
+                        private fun onStop(): Boolean {
+                            center = mapView.centerPoint()
+                            settled(center)
+                            return true
+                        }
+                    }, 400))
+                    // Address for the starting position straight away (post:
+                    // once the map has been laid out and knows its centre).
+                    mapView.post { settled(mapView.centerPoint()) }
+                    mapView
                 }
             )
 
@@ -161,7 +162,7 @@ fun LocationPickerScreen(
                 val addressText = if (findingAddress) {
                     "Finding the address..."
                 } else {
-                    pickedAddress ?: "No street address found for this spot"
+                    if (pickedAddress != null) pickedAddress else "No street address found for this spot"
                 }
                 Text(text = addressText, style = MaterialTheme.typography.bodyLarge)
                 Text(

@@ -229,7 +229,9 @@ class AlertService : Service() {
         val text = shortStatus(status)
         if (text == watchText) return // nothing new to show
         watchText = text
-        val details = status.message ?: text
+        // Expanded, the notification shows the server's full message.
+        var details = text
+        if (status.message != null) details = status.message
         getSystemService(NotificationManager::class.java)
             .notify(WATCH_NOTIFICATION_ID, createWatchNotification(text, details))
     }
@@ -239,7 +241,8 @@ class AlertService : Service() {
         if (status.notRegistered) return "Sending your registration to the server..."
         when (status.status) {
             "on_the_way" -> {
-                val stopsAway = status.stopsAway ?: 0
+                var stopsAway = 0
+                if (status.stopsAway != null) stopsAway = status.stopsAway
                 var before = "your stop is next"
                 if (stopsAway == 1) before = "1 stop before yours"
                 if (stopsAway > 1) before = "$stopsAway stops before yours"
@@ -250,7 +253,9 @@ class AlertService : Service() {
             "skipped" -> return "The truck skipped your stop today"
             "truck_offline" -> return "The truck isn't on the road right now"
         }
-        return status.message ?: "Watching for garbage truck alerts..."
+        // Anything else (unknown truck, no stops): the server's own message.
+        if (status.message != null) return status.message
+        return "Watching for garbage truck alerts..."
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
