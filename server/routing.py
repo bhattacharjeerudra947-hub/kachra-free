@@ -1,5 +1,5 @@
 """Background thread that gets driving routes from OSRM (osm.py), the free
-OpenStreetMap routing service (AGENTS.md sections 8, 10).
+OpenStreetMap routing service (CLAUDE.md sections 8, 10).
 
 Two jobs:
 

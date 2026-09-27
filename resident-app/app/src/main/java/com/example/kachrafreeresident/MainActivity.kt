@@ -32,12 +32,12 @@ class MainActivity : ComponentActivity() {
     // mirrors its result once a second while the screen is visible - a
     // local memory read, not a network call.
     //
-    // The one network call made here is a tiny ping every PING_INTERVAL_MS
-    // while the screen is open, for the "Server reachable" indicator. It
-    // works before registering too, when AlertService isn't running.
+    // The server pill uses AlertService's polls when it's running. Before
+    // registering (no AlertService yet) this screen pings the server itself
+    // every PING_INTERVAL_MS.
     private companion object {
         private const val UI_REFRESH_MS = 1_000L
-        private const val PING_INTERVAL_MS = 10_000L
+        private const val PING_INTERVAL_MS = 2_000L
     }
 
     private lateinit var prefs: SharedPreferences
@@ -51,7 +51,8 @@ class MainActivity : ComponentActivity() {
     private var latitudeText by mutableStateOf("")
     private var longitudeText by mutableStateOf("")
     private var houseAddress by mutableStateOf<String?>(null)
-    private var alertMinutes by mutableStateOf(10)
+    // Typed by the resident, so kept as text until Register/Save checks it.
+    private var alertMinutesText by mutableStateOf("10")
 
     private var truckStatus by mutableStateOf<ServerApi.TruckStatus?>(null)
     // null until the first ping finishes.
@@ -85,16 +86,22 @@ class MainActivity : ComponentActivity() {
             // (lastStatus is null then); the server pill says it's offline.
             val latest = AlertService.lastStatus
             if (latest != null) truckStatus = latest
+            // AlertService already talks to the server: use its result for the pill.
+            if (AlertService.isRunning && AlertService.lastPollOk != null) {
+                serverReachable = AlertService.lastPollOk
+            }
             uiHandler.postDelayed(this, UI_REFRESH_MS)
         }
     }
 
     private val pingRunnable = object : Runnable {
         override fun run() {
-            Thread {
-                val reachable = ServerApi.ping()
-                runOnUiThread { serverReachable = reachable }
-            }.start()
+            if (!AlertService.isRunning) {
+                Thread {
+                    val reachable = ServerApi.ping()
+                    runOnUiThread { serverReachable = reachable }
+                }.start()
+            }
             uiHandler.postDelayed(this, PING_INTERVAL_MS)
         }
     }
@@ -135,8 +142,8 @@ class MainActivity : ComponentActivity() {
                             onTruckIdChange = { truckId = it },
                             houseLocationLabel = houseLocationLabel(),
                             onPickLocation = { launchLocationPicker() },
-                            alertMinutes = alertMinutes,
-                            onAlertMinutesChange = { alertMinutes = it },
+                            alertMinutesText = alertMinutesText,
+                            onAlertMinutesChange = { alertMinutesText = it },
                             isEditing = registered && editing,
                             onCancel = { cancelEditing() },
                             onSubmit = { submitRegistration() }
@@ -155,7 +162,7 @@ class MainActivity : ComponentActivity() {
         latitudeText = prefs.getString(AppPrefs.KEY_LATITUDE, "").orEmpty()
         longitudeText = prefs.getString(AppPrefs.KEY_LONGITUDE, "").orEmpty()
         houseAddress = prefs.getString(AppPrefs.KEY_ADDRESS, null)
-        alertMinutes = prefs.getInt(AppPrefs.KEY_ALERT_MINUTES, 10)
+        alertMinutesText = prefs.getInt(AppPrefs.KEY_ALERT_MINUTES, 10).toString()
     }
 
     /** Leaves the settings page without saving: puts back the saved values. */
@@ -205,10 +212,9 @@ class MainActivity : ComponentActivity() {
 
     private fun startAlertService() {
         try {
-            ContextCompat.startForegroundService(
-                this,
-                Intent(this, AlertService::class.java).apply { action = AlertService.ACTION_START }
-            )
+            val start = Intent(this, AlertService::class.java)
+            start.action = AlertService.ACTION_START
+            ContextCompat.startForegroundService(this, start)
         } catch (_: Exception) {
             // Nothing more we can do here; the resident can still see status
             // whenever they reopen the app.
@@ -220,6 +226,8 @@ class MainActivity : ComponentActivity() {
         // submitRegistration() has already checked these are numbers.
         val latitude = latitudeText.toDouble()
         val longitude = longitudeText.toDouble()
+        // submitRegistration() has already checked this is a whole number.
+        val alertMinutes = alertMinutesText.trim().toInt()
         return ServerApi.register(username, truckId, latitude, longitude, alertMinutes, houseAddress)
     }
 
@@ -239,6 +247,11 @@ class MainActivity : ComponentActivity() {
         }
         if (latitudeText.toDoubleOrNull() == null || longitudeText.toDoubleOrNull() == null) {
             Toast.makeText(this, "Choose your house on the map first", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val minutes = alertMinutesText.trim().toIntOrNull()
+        if (minutes == null || minutes < 1 || minutes > 120) {
+            Toast.makeText(this, "Alert time must be a number of minutes from 1 to 120", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -271,7 +284,7 @@ class MainActivity : ComponentActivity() {
             .putString(AppPrefs.KEY_LATITUDE, latitudeText)
             .putString(AppPrefs.KEY_LONGITUDE, longitudeText)
             .putString(AppPrefs.KEY_ADDRESS, houseAddress)
-            .putInt(AppPrefs.KEY_ALERT_MINUTES, alertMinutes)
+            .putInt(AppPrefs.KEY_ALERT_MINUTES, alertMinutesText.trim().toInt())
             .apply()
 
         registered = true
