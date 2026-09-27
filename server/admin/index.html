@@ -40,7 +40,21 @@
       <input name="truckId" placeholder="Truck ID, e.g. TRUCK-1" required>
       <button>Add truck</button>
     </form>
-    <p class="hint">Add a truck here first: the driver app only starts with a Truck ID that's listed here.</p>
+    <p class="hint">Add a truck here first: the driver app only starts with a Truck ID that's listed here.
+      Click a truck's ID to see its past collection rounds.</p>
+  </section>
+
+  <!-- Shown after clicking a truck's ID in the table above. -->
+  <section id="history-panel" class="wide" hidden>
+    <h2 id="history-title"></h2>
+    <p id="history-summary" class="hint"></p>
+    <div class="table-scroll">
+      <table id="history">
+        <thead></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="row"><button id="close-history">Close</button></div>
   </section>
 
   <section id="truck-editor" class="wide" hidden>
@@ -87,13 +101,8 @@
       <label>Latitude <input name="latitude" required></label>
       <label>Longitude <input name="longitude" required></label>
       <button type="button" id="pick-house">Pick house on map</button>
-      <label>Alert when truck is
-        <select name="alertMinutes">
-          <option value="5">5 min away</option>
-          <option value="10" selected>10 min away</option>
-          <option value="15">15 min away</option>
-          <option value="30">30 min away</option>
-        </select>
+      <label>Alert when truck is (min away, 1–120)
+        <input name="alertMinutes" type="number" min="1" max="120" step="1" required>
       </label>
       <div class="row span">
         <button class="primary">Save changes</button>
@@ -106,13 +115,13 @@
   <section>
     <h2>Settings</h2>
     <form id="settings-form" class="grid-form">
-      <label>Stop radius (m) <input name="stopRadiusMeters" type="number" step="any"></label>
+      <label>Collect-button radius (m) <input name="stopRadiusMeters" type="number" step="any"></label>
       <label>Default time per stop (s) <input name="secondsPerStop" type="number" step="any"></label>
       <label>Road refresh (min) <input name="routeRefreshMinutes" type="number" step="any"></label>
       <label>Average car speed, fallback (km/h) <input name="fallbackSpeedKmh" type="number" step="any"></label>
       <p class="hint span">
         ETA = drive time along real roads + typical collecting time at each stop before the resident's.<br>
-        Stop radius: how close the truck must be to count as "at" a stop.
+        Collect-button radius: how close the driver must be to a stop to see the "Garbage collected" button (residents then see "the truck is at your stop"). Stops are only ever marked collected by that button.
         Default time per stop: for stops with no collection history yet.
         Road refresh: how often the road from each moving truck to its next stop is re-fetched.
         Average car speed: rough drive times if the route server can't be reached (shown under Alerts).</p>

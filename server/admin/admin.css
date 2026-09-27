@@ -63,6 +63,25 @@ th { font-weight: 600; font-size: 12px; color: #656d76; }
 .online-pill.off { background: #e9ecef; color: #656d76; }
 #trucks-summary { font-weight: normal; margin-left: 8px; }
 
+/* A button that looks like a link (truck IDs in the Trucks table). */
+button.link {
+  background: none; border: none; padding: 0;
+  color: #0969da; font-weight: 600; text-decoration: underline; cursor: pointer;
+}
+button.link:hover { background: none; color: #0550ae; }
+
+/* Collection history table. Wide trucks (many stops) scroll sideways. */
+.table-scroll { overflow-x: auto; }
+#history th, #history td { white-space: nowrap; }
+#history tr.usual td { background: #f6f8fa; }
+.tag {
+  display: inline-block; padding: 0 6px; border-radius: 8px;
+  font-size: 11px; font-weight: 600;
+}
+.tag.real { background: #d3f9d8; color: #1a7f37; }
+.tag.demo { background: #e9ecef; color: #656d76; }
+.tag.today { background: #d0ebff; color: #1864ab; }
+
 .ok { color: #1a7f37; font-weight: 600; }
 .bad { color: #cf222e; font-weight: 600; }
 
@@ -102,9 +121,33 @@ label.inline { flex-direction: row; align-items: center; gap: 6px; font-size: 13
   border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
   color: #fff; font: 600 11px/18px system-ui, sans-serif; text-align: center;
 }
-/* Stops: a numbered circle in their truck's colour (set inline). */
-.pin.stop.selected { outline: 3px solid rgba(0, 0, 0, 0.35); }
-.pin.resident { background: #343a40; min-width: 12px; height: 12px; padding: 0; border-radius: 6px; }
+/* Stops: a white bin on a circle in the truck's colour (set inline), with
+   a number bubble (top right) and a status bubble (top left). */
+.stop-marker { position: relative; width: 30px; height: 30px; transform: translate(-50%, -50%); }
+.stop-marker .icon {
+  width: 30px; height: 30px; border-radius: 15px;
+  border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+}
+.stop-marker .icon svg { width: 16px; height: 16px; fill: #fff; }
+.stop-marker.selected .icon { outline: 3px solid rgba(0, 0, 0, 0.35); }
+.stop-marker .bubble {
+  position: absolute; top: -7px; min-width: 16px; height: 16px; padding: 0 3px;
+  border-radius: 8px; border: 1.5px solid; box-sizing: border-box;
+  font: 700 10px/13px system-ui, sans-serif; text-align: center;
+}
+.stop-marker .bubble.number { right: -8px; background: #fff; }
+.stop-marker .bubble.status { left: -8px; }
+.stop-marker .bubble.done { background: #2f9e44; border-color: #fff; color: #fff; }
+.stop-marker .bubble.skipped { background: #fcc419; border-color: #fff; color: #1f2328; }
+
+/* Residents: a white person on a dark circle. */
+.resident-marker {
+  width: 26px; height: 26px; border-radius: 13px; transform: translate(-50%, -50%);
+  background: #343a40; border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+}
+.resident-marker svg { width: 18px; height: 18px; fill: #fff; }
 
 /* Trucks: a truck icon in the truck's colour, with its ID underneath. */
 .truck-marker {

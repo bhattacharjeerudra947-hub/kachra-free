@@ -1,4 +1,4 @@
-"""Truck progress, collection history and ETA (AGENTS.md sections 6-11).
+"""Truck progress, collection history and ETA (CLAUDE.md sections 6-11).
 
 Words used below:
 - stop:  a collection point where the truck parks and nearby residents
@@ -6,8 +6,13 @@ Words used below:
          stops, and that order is its collection order.
 - leg:   the drive from one stop to the next.
 - run:   one truck's collection round on one day.
-- visit: when the truck arrived at a stop during a run, and when it left.
-         The gap is the time spent collecting there.
+- visit: a stop's record in a run. In a real run it's when the driver
+         pressed "Garbage collected" there (collectedAt). Demo history also
+         has when the truck arrived and left (the gap is its stoppage time).
+
+Today, each stop is "collected" (the driver pressed the button), "skipped"
+(not collected, but a later stop was), "next" (the one after the last
+collected stop) or "pending".
 
 A resident is tied to one truck (they enter its Truck ID) and is served at
 that truck's stop nearest to their house.
@@ -32,8 +37,9 @@ import time
 
 import db
 
-# A truck that hasn't reported for this long is treated as offline.
-ACTIVE_SECONDS = 120
+# A sharing truck that hasn't reported for this long is treated as offline
+# (the driver app reports every second; this covers a phone that just dies).
+ACTIVE_SECONDS = 10
 # Spacing between stops in demo history when no road drive time is known
 # yet. Only affects the "usually there around HH:MM" times.
 DEMO_SECONDS_BETWEEN_STOPS = 300
@@ -58,55 +64,49 @@ def run_id(truck_id, date=None):
 
 
 def is_active(truck):
-    return "lat" in truck and time.time() - truck["lastSeen"] <= ACTIVE_SECONDS
+    """Online: the driver is sharing (they haven't pressed Stop) and the last
+    location arrived within ACTIVE_SECONDS."""
+    if "lat" not in truck or not truck["sharing"]:
+        return False
+    return time.time() - truck["lastSeen"] <= ACTIVE_SECONDS
 
 
 # ---------------------------------------------------------- recording --
 
-def record_position(data, truck_id):
-    """Called on every location update (after the point is added to the day's
-    track). Marks arrival at any stop the truck is at, and keeps pushing that
-    stop's "left" time forward while it stays."""
-    truck = data["trucks"][truck_id]
-    stops = truck["stops"]
-
-    # Today's run for this truck, created on the first update of the day.
+def todays_run(data, truck_id):
+    """Today's run for this truck, created the first time it's needed."""
     key = run_id(truck_id)
     if key not in data["runs"]:
         data["runs"][key] = {"truckId": truck_id, "date": today(), "synthetic": False, "visits": {}}
-    run = data["runs"][key]
+    return data["runs"][key]
 
+
+def mark_collected(data, truck_id, stop_index):
+    """The driver pressed "Garbage collected" at stop stop_index."""
+    truck = data["trucks"][truck_id]
+    stop = truck["stops"][stop_index]
+    run = todays_run(data, truck_id)
     now = time.time()
-    radius = data["settings"]["stopRadiusMeters"]
-    for i, stop in enumerate(stops):
-        if distance_m(truck["lat"], truck["lng"], stop["lat"], stop["lng"]) > radius:
-            continue  # not at this stop
-
-        if stop["id"] not in run["visits"]:
-            # First time at this stop today: it just arrived.
-            run["visits"][stop["id"]] = {"arrived": now, "left": now}
-            if i > 0:
-                remember_driven_road(truck_id, truck, run, i, now)
-
-        # Still here, so it hasn't left yet.
-        run["visits"][stop["id"]]["left"] = now
+    run["visits"][stop["id"]] = {"collectedAt": now}
+    if stop_index > 0:
+        remember_driven_road(truck_id, truck, run, stop_index, now)
 
 
-def remember_driven_road(truck_id, truck, run, i, arrived):
-    """The truck just arrived at stop i. If it came straight from stop i-1
-    this run, save the roads it actually took (its GPS points in between) as
+def remember_driven_road(truck_id, truck, run, i, collected_at):
+    """Stop i was just collected. If stop i-1 was collected earlier this run,
+    save the roads the truck actually took in between (its GPS points) as
     that leg's shape. It replaces the OSRM route on the maps from then on."""
     prev = truck["stops"][i - 1]
     stop = truck["stops"][i]
     prev_visit = run["visits"].get(prev["id"])
     if not prev_visit:
         return
-    left = prev_visit["left"]
+    since = prev_visit["collectedAt"]
 
-    # GPS points recorded after leaving the previous stop, before arriving here.
+    # GPS points recorded between the two collections.
     between = []
     for lat, lng, t in db.read_track(truck_id, today()):
-        if left < t < arrived:
+        if since < t < collected_at:
             between.append([lat, lng])
     if not between:
         return  # no GPS points in between, so no real road to remember
@@ -120,8 +120,8 @@ def remember_driven_road(truck_id, truck, run, i, arrived):
 
 
 def progress(data, truck_id):
-    """(furthest stop index visited today or -1, index of the stop the truck
-    is standing at right now or None)."""
+    """(index of the furthest stop collected today or -1, index of the stop
+    the truck is standing at right now or None)."""
     truck = data["trucks"][truck_id]
     stops = truck["stops"]
     run = data["runs"].get(run_id(truck_id))
@@ -144,6 +144,29 @@ def progress(data, truck_id):
     return last, at
 
 
+def stop_statuses(data, truck_id):
+    """Today's status of each of the truck's stops, in order: "collected",
+    "skipped", "next" or "pending"."""
+    stops = data["trucks"][truck_id]["stops"]
+    run = data["runs"].get(run_id(truck_id))
+    visits = {}
+    if run:
+        visits = run["visits"]
+    last, _ = progress(data, truck_id)
+
+    statuses = []
+    for i, stop in enumerate(stops):
+        if stop["id"] in visits:
+            statuses.append("collected")
+        elif i < last:
+            statuses.append("skipped")  # a later stop was collected first
+        elif i == last + 1:
+            statuses.append("next")
+        else:
+            statuses.append("pending")
+    return statuses
+
+
 # ------------------------------------------------------------ history --
 
 def past_visits(data, truck_id, stop_id):
@@ -158,10 +181,12 @@ def past_visits(data, truck_id, stop_id):
 
 
 def typical_dwell(data, truck_id, stop_id):
-    """Median seconds spent collecting at a stop, or the default setting."""
+    """Median seconds the truck stops at a stop, or the default setting.
+    Only visits with arrival and departure times count (demo history, for
+    now: real runs record just when the stop was collected)."""
     dwells = []
     for visit in past_visits(data, truck_id, stop_id):
-        if visit["left"] > visit["arrived"]:
+        if "arrived" in visit and visit["left"] > visit["arrived"]:
             dwells.append(visit["left"] - visit["arrived"])
     if not dwells:
         return data["settings"]["secondsPerStop"]
@@ -172,7 +197,12 @@ def usual_time(data, truck_id, stop_id):
     """Typical time of day the truck reaches a stop, as "07:40", or None."""
     seconds = []
     for visit in past_visits(data, truck_id, stop_id):
-        t = datetime.datetime.fromtimestamp(visit["arrived"])
+        # Real runs only know when the stop was collected; that's close enough.
+        if "arrived" in visit:
+            when = visit["arrived"]
+        else:
+            when = visit["collectedAt"]
+        t = datetime.datetime.fromtimestamp(when)
         seconds.append(t.hour * 3600 + t.minute * 60 + t.second)
     if not seconds:
         return None
@@ -213,6 +243,7 @@ def generate_demo_history(data, truck_id, days=14):
                 t += drive_seconds * random.uniform(0.9, 1.5)
 
             dwell = base_dwell[stop["id"]] * random.uniform(0.7, 1.3)
+            # Arrival, departure; departure - arrival = stoppage time.
             visits[stop["id"]] = {"arrived": t, "left": t + dwell}
             t += dwell
 
@@ -460,9 +491,11 @@ def resident_status(data, resident):
         return result
 
     stop = truck["stops"][index]
+    statuses = stop_statuses(data, truck_id)
     all_stops = []
-    for s in truck["stops"]:
-        all_stops.append({"name": s["name"], "latitude": s["lat"], "longitude": s["lng"]})
+    for i, s in enumerate(truck["stops"]):
+        all_stops.append({"name": s["name"], "latitude": s["lat"], "longitude": s["lng"],
+                          "status": statuses[i]})
     result.update(
         stopName=stop["name"], stopLatitude=stop["lat"], stopLongitude=stop["lng"],
         stopDistanceMeters=round(metres),
@@ -475,6 +508,14 @@ def resident_status(data, resident):
     usually = ""
     if result["usualTime"]:
         usually = f" Usually there around {result['usualTime']}."
+
+    # Already done for today (whether or not the truck is still out).
+    if statuses[index] == "collected":
+        result.update(status="collected", message="Garbage was already collected at your collection point today." + where)
+        return result
+    if statuses[index] == "skipped":
+        result.update(status="skipped", message="The truck skipped your collection point today." + where)
+        return result
 
     if not is_active(truck):
         # Not driving right now: show the round's usual road up to their stop.
@@ -490,10 +531,6 @@ def resident_status(data, resident):
                       message="The truck is at your collection point now!" + where)
         return result
 
-    if index <= last:
-        result.update(status="collected", message="Garbage was already collected at your collection point today." + where)
-        return result
-
     next_index = last + 1
     stops_away = index - next_index
     if stops_away == 0:
@@ -503,7 +540,9 @@ def resident_status(data, resident):
     else:
         before = f"{stops_away} stops before yours"
 
-    # ETA = drive time + collecting time at every stop still before this one.
+    # ETA = drive time + typical stoppage time at every stop still before
+    # this one. A stop's time only drops out once the driver marks it
+    # collected, so a truck still parked at a stop keeps it in the ETA.
     drive_seconds, points, is_rough = drive(data, truck, next_index, index)
     collecting = 0
     for i in range(next_index, index):

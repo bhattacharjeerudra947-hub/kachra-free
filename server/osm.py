@@ -10,7 +10,7 @@
 
 All three public servers ask for fair use: an honest User-Agent and at most
 about one request per second. _get_json() spaces requests out to respect
-that. A real deployment should run its own copies (docs/TODO_FOR_YOU.md).
+that. A real deployment would run its own copies of these servers.
 """
 
 import json

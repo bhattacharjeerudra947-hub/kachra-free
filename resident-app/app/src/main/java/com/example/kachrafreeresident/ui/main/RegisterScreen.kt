@@ -13,9 +13,9 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -28,11 +28,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.kachrafreeresident.R
 
-// The alert range choices from AGENTS.md section 3.
-private val ALERT_OPTIONS_MINUTES = listOf(5, 10, 15, 30)
 
 /**
  * The registration form. Shown once at the start, and later as the
@@ -47,8 +46,8 @@ fun RegisterScreen(
     onTruckIdChange: (String) -> Unit,
     houseLocationLabel: String,
     onPickLocation: () -> Unit,
-    alertMinutes: Int,
-    onAlertMinutesChange: (Int) -> Unit,
+    alertMinutesText: String,
+    onAlertMinutesChange: (String) -> Unit,
     isEditing: Boolean,
     onCancel: () -> Unit,
     onSubmit: () -> Unit
@@ -135,20 +134,15 @@ fun RegisterScreen(
 
             // ---- Alert ----
             SectionCard(title = "Alert me when the truck is about") {
-                Row {
-                    for (minutes in ALERT_OPTIONS_MINUTES) {
-                        FilterChip(
-                            selected = alertMinutes == minutes,
-                            onClick = { onAlertMinutesChange(minutes) },
-                            label = { Text("$minutes min") },
-                            modifier = Modifier.padding(end = 8.dp)
-                        )
-                    }
-                }
-                Text(
-                    "away from your collection point.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                OutlinedTextField(
+                    value = alertMinutesText,
+                    onValueChange = onAlertMinutesChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Minutes away") },
+                    supportingText = { Text("From your collection point, 1 to 120 minutes.") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp)
                 )
             }
 

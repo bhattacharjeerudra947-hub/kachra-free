@@ -20,7 +20,8 @@ object ServerApi {
 
     data class Alert(val id: String, val message: String)
 
-    data class Stop(val name: String, val position: GeoPoint)
+    // status is today's: "collected", "skipped", "next" or "pending".
+    data class Stop(val name: String, val position: GeoPoint, val status: String)
 
     data class TruckStatus(
         // true when the server doesn't know this username (yet).
@@ -201,7 +202,7 @@ object ServerApi {
         for (i in 0 until array.length()) {
             val stop = array.getJSONObject(i)
             val position = GeoPoint(stop.getDouble("latitude"), stop.getDouble("longitude"))
-            stops.add(Stop(stop.getString("name"), position))
+            stops.add(Stop(stop.getString("name"), position, stop.getString("status")))
         }
         return stops
     }

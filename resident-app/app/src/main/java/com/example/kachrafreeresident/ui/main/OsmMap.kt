@@ -141,12 +141,14 @@ fun truckIcon(context: Context): BitmapDrawable {
 
 /**
  * A stop: a white dustbin on a circle, with the stop's number in a small
- * badge at its top-right. The resident's own stop is green and a bit
- * bigger. Anchor: the centre of the big circle, STOP_ANCHOR_X / Y.
+ * bubble at its top-right, and today's status in a bubble at its top-left:
+ * a green tick when collected, a yellow "!" when skipped. The resident's
+ * own stop is green and a bit bigger. Anchor: the centre of the big
+ * circle, STOP_ANCHOR_X / Y.
  */
-fun stopIcon(context: Context, number: Int, isMine: Boolean): BitmapDrawable {
+fun stopIcon(context: Context, number: Int, isMine: Boolean, status: String): BitmapDrawable {
     val scale = if (isMine) 1.25f else 1f
-    val width = dp(context, 38f * scale)
+    val width = dp(context, 46f * scale)
     val height = dp(context, 36f * scale)
     val bitmap = Bitmap.createBitmap(width.toInt(), height.toInt(), Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
@@ -160,28 +162,71 @@ fun stopIcon(context: Context, number: Int, isMine: Boolean): BitmapDrawable {
     drawBadgeCircle(context, canvas, paint, cx, cy, radius, color)
     drawVector(context, canvas, R.drawable.ic_bin, Color.WHITE, cx, cy, dp(context, 16f * scale))
 
-    // The number badge.
-    val bx = width - dp(context, 8f * scale)
-    val by = dp(context, 8f * scale)
-    val badgeRadius = dp(context, 7.5f * scale)
-    paint.color = color
-    canvas.drawCircle(bx, by, badgeRadius, paint)
-    paint.color = Color.WHITE
-    canvas.drawCircle(bx, by, badgeRadius - dp(context, 1.5f), paint)
-    paint.color = color
-    paint.textAlign = Paint.Align.CENTER
-    paint.typeface = Typeface.DEFAULT_BOLD
-    paint.textSize = dp(context, if (number < 10) 10f * scale else 8f * scale)
-    // drawText's y is the text's baseline: move it down by half the text height.
-    val textY = by - (paint.descent() + paint.ascent()) / 2
-    canvas.drawText(number.toString(), bx, textY, paint)
+    // The number bubble, top-right.
+    val bubbleRadius = dp(context, 7.5f * scale)
+    val top = dp(context, 8f * scale)
+    val right = width - dp(context, 8f * scale)
+    val left = dp(context, 8f * scale)
+    drawBubble(context, canvas, paint, right, top, bubbleRadius, Color.WHITE, color)
+    val textSize = if (number < 10) 10f * scale else 8f * scale
+    drawCentredText(context, canvas, paint, number.toString(), right, top, textSize, color)
+
+    // The status bubble, top-left.
+    if (status == "collected") {
+        drawBubble(context, canvas, paint, left, top, bubbleRadius, DONE_COLOR, Color.WHITE)
+        drawTick(context, canvas, left, top, bubbleRadius)
+    } else if (status == "skipped") {
+        drawBubble(context, canvas, paint, left, top, bubbleRadius, SKIPPED_COLOR, Color.WHITE)
+        drawCentredText(context, canvas, paint, "!", left, top, 10f * scale, Color.BLACK)
+    }
 
     return BitmapDrawable(context.resources, bitmap)
 }
 
 // Where a stop icon's big circle is, as a fraction of the picture.
-const val STOP_ANCHOR_X = 0.42f
-const val STOP_ANCHOR_Y = 0.58f
+const val STOP_ANCHOR_X = 0.5f
+const val STOP_ANCHOR_Y = 20f / 36f
+
+const val DONE_COLOR = 0xFF2F9E44.toInt()     // green tick bubble: collected
+const val SKIPPED_COLOR = 0xFFFCC419.toInt()  // yellow "!" bubble: skipped
+
+/** A small filled circle with a thin border in another colour. */
+private fun drawBubble(context: Context, canvas: Canvas, paint: Paint,
+                       x: Float, y: Float, radius: Float, fill: Int, border: Int) {
+    paint.style = Paint.Style.FILL
+    paint.color = border
+    canvas.drawCircle(x, y, radius, paint)
+    paint.color = fill
+    canvas.drawCircle(x, y, radius - dp(context, 1.5f), paint)
+}
+
+private fun drawCentredText(context: Context, canvas: Canvas, paint: Paint,
+                            text: String, x: Float, y: Float, sizeDp: Float, color: Int) {
+    paint.style = Paint.Style.FILL
+    paint.color = color
+    paint.textAlign = Paint.Align.CENTER
+    paint.typeface = Typeface.DEFAULT_BOLD
+    paint.textSize = dp(context, sizeDp)
+    // drawText's y is the text's baseline: move it down by half the text height.
+    val baseline = y - (paint.descent() + paint.ascent()) / 2
+    canvas.drawText(text, x, baseline, paint)
+}
+
+/** A white tick mark centred on (x, y). */
+private fun drawTick(context: Context, canvas: Canvas, x: Float, y: Float, radius: Float) {
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    paint.style = Paint.Style.STROKE
+    paint.color = Color.WHITE
+    paint.strokeWidth = dp(context, 1.8f)
+    paint.strokeCap = Paint.Cap.ROUND
+    paint.strokeJoin = Paint.Join.ROUND
+    val size = radius * 0.5f
+    val tick = android.graphics.Path()
+    tick.moveTo(x - size, y)
+    tick.lineTo(x - size * 0.2f, y + size * 0.7f)
+    tick.lineTo(x + size, y - size * 0.6f)
+    canvas.drawPath(tick, paint)
+}
 
 /** The house: a red map pin. Anchor: its tip, HOME_ANCHOR_X / Y. */
 fun homeIcon(context: Context): BitmapDrawable {
