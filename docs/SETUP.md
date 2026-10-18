@@ -317,16 +317,17 @@ Expected:
 ngrok version 3.x.x
 ```
 
-Set `BASE_URL` in **both** apps' `ServerConfig.kt` to that domain:
+For each app, add `serverBaseUrl` to the gitignored `local.properties` and set
+it to that domain:
 
 ```text
 https://your-name.ngrok-free.app
 ```
 
-- `driver-app/app/src/main/java/com/example/kachrafreedriver/ServerConfig.kt`
-- `resident-app/app/src/main/java/com/example/kachrafreeresident/ServerConfig.kt`
+- `driver-app/local.properties`
+- `resident-app/local.properties`
 
-and rebuild both apps (section 9) — this is a source change, so the already
+Then rebuild both apps (section 9) — this is a build configuration change, so the already
 installed APKs won't pick it up until reinstalled. This is one-time setup;
 starting the tunnel itself is a day-to-day step, covered in section 10.
 
@@ -335,7 +336,7 @@ starting the tunnel itself is a day-to-day step, covered in section 10.
 ## 9. Building and installing the apps
 
 Whenever `driver-app` or `resident-app`'s source changes — including the
-`BASE_URL` edit above — rebuild before testing. Both use the same commands,
+`serverBaseUrl` change above — rebuild before testing. Both use the same commands,
 run from that app's own folder:
 
 ```cmd
@@ -403,9 +404,10 @@ every time:
    Kachra Free server on http://localhost:8080
    Admin panel: http://localhost:8080/admin  (user: admin, password: <generated>)
    ```
-2. In a second terminal, start the tunnel:
+2. Create the gitignored `server/.env`, set `NGROK_DOMAIN` to the reserved
+   domain, then in a second terminal start the tunnel:
    ```cmd
-   ngrok http --domain=your-name.ngrok-free.app 8080
+   powershell -ExecutionPolicy Bypass -File .\start-tunnel.ps1
    ```
 3. Check it: open `https://your-name.ngrok-free.app/admin` in a browser and
    log in with the password printed in step 1.

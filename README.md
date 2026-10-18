@@ -21,13 +21,13 @@ they chose. Everything runs on free services.
 ```text
 cd server
 python server.py                              # prints the admin password
-ngrok http --domain=YOUR-NAME.ngrok-free.app 8080
+.\start-tunnel.ps1                            # reads NGROK_DOMAIN from server/.env
 ```
 
 1. Open `http://localhost:8080/admin`. Add a truck, click its stops onto the
    map in collection order, save. Optionally, **Generate demo history**.
-2. Set `BASE_URL` in both apps' `ServerConfig.kt` to your ngrok URL, then
-   build each app with `gradlew assembleDebug`.
+2. Add `serverBaseUrl` to each app's gitignored `local.properties`, then build
+   each app with `gradlew assembleDebug`.
 3. Driver phone: enter the Truck ID and start sharing (only Truck IDs added
    in the admin panel are accepted). Resident phone: register with a
    username and the same Truck ID.

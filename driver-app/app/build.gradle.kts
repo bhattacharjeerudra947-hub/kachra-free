@@ -1,7 +1,22 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.isFile) {
+    localPropertiesFile.inputStream().use { localProperties.load(it) }
+}
+val serverBaseUrl = providers.gradleProperty("serverBaseUrl").orNull
+    ?: localProperties.getProperty("serverBaseUrl")
+    ?.trim()
+    ?.trimEnd('/')
+    ?: throw GradleException(
+        "Missing serverBaseUrl in driver-app/local.properties. Set it to the server URL."
+    )
 
 android {
     namespace = "com.example.kachrafreedriver"
@@ -15,6 +30,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+        buildConfigField("String", "SERVER_BASE_URL", "\"$serverBaseUrl\"")
     }
 
     compileOptions {
@@ -24,6 +40,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

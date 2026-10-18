@@ -1216,8 +1216,8 @@ through lines (non-interactive) so stops can be added on top of roads.
   `http://` works for emulator/LAN testing; the ngrok URL is HTTPS.
 - **Input handling:** JSON bodies must be objects, numbers are type-checked,
   usernames are validated; the admin page escapes all user text.
-- **Secrets in git:** `data/` (db, password, tracks) and `local.properties`
-  are gitignored.
+- **Configuration outside git:** `data/` (db, password, tracks), each app's
+  `local.properties`, and `server/.env` are gitignored.
 
 ---
 
@@ -1228,8 +1228,9 @@ makes port-forwarding impossible. So the server is exposed through an
 **ngrok** tunnel: the ngrok agent on the laptop keeps an outbound connection
 to ngrok, which serves a public HTTPS address and forwards it to
 `localhost:8080`. The free plan includes one **static domain** that survives
-restarts, so the apps' `BASE_URL` is set once. It's currently
-`https://redacted.invalid` in both apps' `ServerConfig.kt`.
+restarts, so the apps' URL is set once. Each app reads `serverBaseUrl` from
+its gitignored `local.properties`; the tunnel launcher reads `NGROK_DOMAIN`
+from the gitignored `server/.env`.
 
 - Both apps send `ngrok-skip-browser-warning: true` on every request, so the
   free tier's HTML warning page doesn't replace the JSON.
